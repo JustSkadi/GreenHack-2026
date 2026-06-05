@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import matplotlib.animation as animation
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 import networkx as nx
 import numpy as np
@@ -35,6 +36,24 @@ EDGE_GHOST = "#ef4444"
 NEW_EDGE_FRAMES = 12
 GHOST_FRAMES = 12
 FINISH_HOLD_FRAMES = 4
+STATION_112_SIZE = 1500
+EMERGENCY_RUN_INDEX = 1
+RCB_BROADCAST_RUN_INDEX = 2
+RCB_MESSAGE = (
+    "RCB: Awaryjne ostrzeżenie — zagrożenie powodziowe w regionie. "
+    "Evakuuj się na wyżyny. Unikaj wód i niżów. Strefa: obszar mesh."
+)
+
+
+@dataclass
+class RcbBroadcast:
+    station: int
+    message: str
+    target_nodes: set[int]
+    received: set[int] = field(default_factory=set)
+    hop_queue: list[tuple[int, int]] = field(default_factory=list)
+    in_flight_to: set[int] = field(default_factory=set)
+    counted: bool = False
 
 
 @dataclass
@@ -212,7 +231,7 @@ def render_multi():
         "--runs",
         type=int,
         default=3,
-        help="Ile razy z rzędu wysłać wiadomość (po jednej naraz)",
+        help="1: wiadomość; 2: SOS→112; 3: fala alertu RCB ze stacji 112",
     )
     parser.add_argument("--weights", type=str, default=None)
     parser.add_argument("--fps", type=int, default=30)
@@ -288,7 +307,8 @@ def render_multi():
     radio_range_m = env.radius * scale_m
 
     route = env.routes[0]
-    route.label = f"{route.source}→{route.destination}"
+    route.label = f"Wiadomość {route.source}→{route.destination}"
+    route.color = "#22c55e"
     packet = PacketAnim(
         route=route,
         hop_from=route.source,
@@ -303,6 +323,7 @@ def render_multi():
     run_transport_s = 0.0
     last_delivery_s: float | None = None
     failed_runs = 0
+    rcb_state: RcbBroadcast | None = None
 
     margin_m = scale_m * 0.05
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -328,6 +349,9 @@ def render_multi():
     packet_scatter = None
     trail_line = None
     repeater_scatter = None
+    station_scatter = None
+    station_label = None
+    wave_circle = None
     title = ax.set_title("", color="#e5e7eb", fontsize=11, pad=10)
     hud_text = ax.text(
         0.98, 0.02, "",
@@ -355,17 +379,64 @@ def render_multi():
                 return greedy_to(env.G, neighbors, route.destination, env.max_hops)
         return action
 
+    def _rcb_expand_from(node: int):
+        if rcb_state is None:
+            return
+        for n in env.G.neighbors(node):
+            if n in rcb_state.received or n in rcb_state.in_flight_to:
+                continue
+            rcb_state.hop_queue.append((node, n))
+            rcb_state.in_flight_to.add(n)
+
+    def _setup_rcb_run():
+        nonlocal rcb_state, endpoints, pending_hop_to, run_transport_s
+        env.setup_rcb_broadcast(route, random)
+        station = route.source
+        component = nx.node_connected_component(env.G, station)
+        rcb_state = RcbBroadcast(
+            station=station,
+            message=RCB_MESSAGE,
+            target_nodes=set(component),
+            received={station},
+        )
+        _rcb_expand_from(station)
+        pending_hop_to = None
+        run_transport_s = 0.0
+        endpoints = {station}
+        packet.hop_from = station
+        packet.hop_to = station
+        packet.hop_t = 1.0
+        packet.route = route
+
     def _start_next_run():
-        nonlocal trail_line, pending_hop_to, endpoints, run_transport_s, failed_runs
+        nonlocal trail_line, pending_hop_to, endpoints, run_transport_s, failed_runs, rcb_state
         if trail_line is not None:
             trail_line.remove()
             trail_line = None
         pending_hop_to = None
         run_transport_s = 0.0
-        if args.same_endpoints:
+        rcb_state = None
+
+        if runs_completed == EMERGENCY_RUN_INDEX:
+            env.clear_emergency_markers()
+            if not env.setup_emergency_route(route, random, scale_m):
+                env.reroll_route_endpoints(route, random)
+                route.label = "SOS→112"
+                route.color = "#dc2626"
+                route.is_emergency = True
+        elif runs_completed == RCB_BROADCAST_RUN_INDEX:
+            _setup_rcb_run()
+            sync_artists()
+            return
+        elif args.same_endpoints:
+            env.clear_emergency_markers()
             env.reset_route(route)
+            route.color = "#22c55e"
+            route.label = f"Wiadomość {route.source}→{route.destination}"
         else:
             env.reroll_route_endpoints(route, random)
+            route.label = f"Wiadomość {route.source}→{route.destination}"
+
         for _ in range(env.gossip_warmup_steps // 2):
             env.spread_all_gossip()
         endpoints = env.endpoint_nodes()
@@ -421,14 +492,98 @@ def render_multi():
         nonlocal run_transport_s
         if not irl_mode or simulation_done:
             return
-        if route.active or _is_hopping():
+        if rcb_state is not None or route.active or _is_hopping():
             run_transport_s += ms_per_frame
+
+    def _step_rcb():
+        nonlocal runs_completed, finish_hold, simulation_done, pending_hop_to, last_delivery_s
+
+        if not route.delivered or _is_hopping():
+            env.tick_physics()
+        _tick_transport_clock()
+
+        if _is_hopping():
+            if (
+                irl_mode
+                and pending_hop_to is not None
+                and not env.hop_edge_ok(route, packet.hop_from, packet.hop_to)
+            ):
+                to_n = pending_hop_to
+                rcb_state.in_flight_to.discard(to_n)
+                rcb_state.hop_queue.insert(0, (packet.hop_from, to_n))
+                packet.hop_t = 1.0
+                packet.hop_to = packet.hop_from
+                pending_hop_to = None
+                sync_artists()
+                return
+
+            prev_t = packet.hop_t
+            packet.hop_t = min(1.0, packet.hop_t + 1.0 / hop_frames)
+            if prev_t < 1.0 <= packet.hop_t and pending_hop_to is not None:
+                to_n = pending_hop_to
+                rcb_state.received.add(to_n)
+                rcb_state.in_flight_to.discard(to_n)
+                if to_n not in route.path:
+                    route.path.append(to_n)
+                _rcb_expand_from(to_n)
+                pending_hop_to = None
+            sync_artists()
+            return
+
+        if (
+            rcb_state
+            and len(rcb_state.received) >= len(rcb_state.target_nodes)
+            and not rcb_state.hop_queue
+        ):
+            if not route.delivered:
+                route.delivered = True
+                last_delivery_s = run_transport_s
+                runs_completed += 1
+                rcb_state.counted = True
+                if runs_completed >= max_runs:
+                    simulation_done = True
+            sync_artists()
+            return
+
+        if rcb_state and rcb_state.hop_queue:
+            from_n, to_n = rcb_state.hop_queue.pop(0)
+            if to_n in rcb_state.received:
+                rcb_state.in_flight_to.discard(to_n)
+            elif env.G.has_edge(from_n, to_n):
+                packet.hop_from = from_n
+                packet.hop_to = to_n
+                packet.hop_t = 0.0
+                pending_hop_to = to_n
+            else:
+                rcb_state.in_flight_to.discard(to_n)
+                _rcb_expand_from(from_n)
+        elif (
+            rcb_state
+            and not _is_hopping()
+            and len(rcb_state.received) < len(rcb_state.target_nodes)
+        ):
+            for n in list(rcb_state.received):
+                _rcb_expand_from(n)
+            if not rcb_state.hop_queue:
+                route.delivered = True
+                last_delivery_s = run_transport_s
+                if not rcb_state.counted:
+                    runs_completed += 1
+                    rcb_state.counted = True
+                if runs_completed >= max_runs:
+                    simulation_done = True
+
+        sync_artists()
 
     def step(_frame=0):
         nonlocal runs_completed, finish_hold, simulation_done, pending_hop_to, last_delivery_s
 
         if simulation_done:
             sync_artists()
+            return
+
+        if rcb_state is not None:
+            _step_rcb()
             return
 
         if route.impossible and not route.delivered:
@@ -481,6 +636,7 @@ def render_multi():
 
     def _clear_artists():
         nonlocal node_scatter, packet_scatter, trail_line, repeater_scatter
+        nonlocal station_scatter, station_label, wave_circle
         edge_tracker.clear()
         if packet_scatter is not None:
             packet_scatter.remove()
@@ -494,9 +650,24 @@ def render_multi():
         if repeater_scatter is not None:
             repeater_scatter.remove()
             repeater_scatter = None
+        if station_scatter is not None:
+            station_scatter.remove()
+            station_scatter = None
+        if station_label is not None:
+            station_label.remove()
+            station_label = None
+        if wave_circle is not None:
+            wave_circle.remove()
+            wave_circle = None
+
+    def _format_coords(x_m: float, y_m: float) -> str:
+        if use_km_ticks:
+            return f"{x_m / 1000:.3f} km, {y_m / 1000:.3f} km"
+        return f"{x_m:.0f} m, {y_m:.0f} m"
 
     def sync_artists():
         nonlocal node_scatter, packet_scatter, trail_line, repeater_scatter
+        nonlocal station_scatter, station_label, wave_circle
         pos_norm = nx.get_node_attributes(env.G, "pos")
         pos = _norm_to_world(pos_norm, scale_m)
         edge_tracker.sync(ax, env.G, pos)
@@ -505,14 +676,27 @@ def render_multi():
         for n in env.G.nodes:
             if n not in pos:
                 continue
+            is_station = env.G.nodes[n].get("is_112", False)
+            got_rcb = rcb_state is not None and n in rcb_state.received
             xs.append(pos[n][0])
             ys.append(pos[n][1])
-            sizes.append(140 if n in endpoints else 70)
-            if n == route.source:
+            if is_station:
+                sizes.append(50)
+                colors.append("#1f2937")
+            elif got_rcb:
+                sizes.append(100)
+                colors.append("#fbbf24")
+            elif n == route.source and not route.is_rcb_broadcast:
+                sizes.append(160 if route.is_emergency else 140)
                 colors.append("#3b82f6")
-            elif n == route.destination:
+            elif n == route.destination and not route.is_emergency and not route.is_rcb_broadcast:
+                sizes.append(140)
                 colors.append("#ef4444")
+            elif n in endpoints:
+                sizes.append(140)
+                colors.append("#4b5563")
             else:
+                sizes.append(70)
                 colors.append("#4b5563")
 
         if node_scatter is None:
@@ -534,12 +718,69 @@ def render_multi():
             trail_line.set_data([], [])
 
         px, py = _packet_xy(packet, pos)
+        pkt_size = 220 if (route.is_emergency or route.is_rcb_broadcast) else 180
         if packet_scatter is None:
             packet_scatter = ax.scatter(
-                [px], [py], s=180, c=route.color, edgecolors="#fff", linewidths=1.2, zorder=5
+                [px], [py], s=pkt_size, c=route.color,
+                edgecolors="#fff", linewidths=1.4 if route.is_emergency else 1.2,
+                zorder=5,
             )
         else:
             packet_scatter.set_offsets(np.array([[px, py]]))
+            packet_scatter.set_facecolors([route.color])
+            packet_scatter.set_sizes([pkt_size])
+
+        station_node = None
+        if route.is_rcb_broadcast and route.source in pos:
+            station_node = route.source
+        elif route.is_emergency and route.destination in pos:
+            station_node = route.destination
+
+        if station_node is not None:
+            sx, sy = pos[station_node]
+            if station_scatter is None:
+                station_scatter = ax.scatter(
+                    [sx], [sy], s=STATION_112_SIZE, c="#dc2626",
+                    edgecolors="#ffffff", linewidths=2.8, zorder=4, alpha=0.93,
+                )
+                station_label = ax.text(
+                    sx, sy, "112",
+                    ha="center", va="center",
+                    color="#ffffff", fontsize=15, fontweight="bold", zorder=5,
+                )
+            else:
+                station_scatter.set_offsets(np.array([[sx, sy]]))
+                station_label.set_position((sx, sy))
+        elif station_scatter is not None:
+            station_scatter.remove()
+            station_scatter = None
+            station_label.remove()
+            station_label = None
+
+        if rcb_state is not None and route.source in pos:
+            sx, sy = pos[route.source]
+            if rcb_state.target_nodes:
+                dists = [
+                    float(np.hypot(pos[n][0] - sx, pos[n][1] - sy))
+                    for n in rcb_state.target_nodes if n in pos
+                ]
+                max_r = max(dists) if dists else scale_m * 0.25
+            else:
+                max_r = scale_m * 0.25
+            prog = len(rcb_state.received) / max(1, len(rcb_state.target_nodes))
+            radius = max_r * (0.1 + 0.9 * prog)
+            if wave_circle is None:
+                wave_circle = mpatches.Circle(
+                    (sx, sy), radius,
+                    fill=False, edgecolor="#fbbf24", linewidth=2.2, alpha=0.5, zorder=1,
+                )
+                ax.add_patch(wave_circle)
+            else:
+                wave_circle.center = (sx, sy)
+                wave_circle.set_radius(radius)
+        elif wave_circle is not None:
+            wave_circle.remove()
+            wave_circle = None
 
         if route.repeater_sites:
             rx = [s["pos"][0] * scale_m for s in route.repeater_sites]
@@ -554,17 +795,45 @@ def render_multi():
             repeater_scatter.set_offsets(np.empty((0, 2)))
 
         mode = "IRL" if irl_mode else "static"
-        if route.delivered and not _is_hopping():
+        if route.is_rcb_broadcast and rcb_state is not None:
+            if route.delivered and not _is_hopping():
+                st = "OK"
+                phase = f"fala RCB · {len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
+            elif _is_hopping():
+                st = "~~~"
+                phase = f"fala RCB · {len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
+            else:
+                st = "~~~"
+                phase = f"fala RCB · {len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
+        elif route.is_emergency:
+            if route.delivered and not _is_hopping():
+                st = "SOS OK"
+                phase = "112 odebrał alert + lokalizacja"
+            elif route.impossible:
+                st = "★"
+                phase = "brak kontaktu 112"
+            elif _is_hopping():
+                st = "SOS↺" if route.tx_retries else "SOS→"
+                phase = "szukam kontaktu ratunkowego 112"
+            else:
+                st = "SOS"
+                phase = "wysyłam SOS + GPS"
+        elif route.delivered and not _is_hopping():
             st = "✓"
+            phase = "dostarczono"
         elif route.impossible:
             st = "★"
+            phase = "impossible"
         elif _is_hopping():
             st = "↺" if route.tx_retries else "→"
+            phase = "routing"
         else:
             st = "…"
+            phase = "routing"
         tx_info = f" | tx↺{route.tx_aborts}" if route.tx_aborts else ""
         title.set_text(
-            f"{route.label}{st} | przebieg {min(runs_completed + (1 if route.active else 0), max_runs)}/{max_runs}{tx_info} | {mode}"
+            f"{route.label}{st} | przebieg "
+            f"{min(runs_completed + (1 if route.active else 0), max_runs)}/{max_runs} | {phase}{tx_info} | {mode}"
         )
 
         if irl_mode:
@@ -576,14 +845,26 @@ def render_multi():
                         bx_, by_ = pos[b]
                         dist_m += float(np.hypot(bx_ - ax_, by_ - ay_))
             if _is_hopping() and packet.hop_from in pos and packet.hop_to in pos:
-                px, py = _packet_xy(packet, pos)
+                px_h, py_h = _packet_xy(packet, pos)
                 fx, fy = pos[packet.hop_from]
-                dist_m += float(np.hypot(px - fx, py - fy))
-            hud_lines = [
-                f"transport: {_format_duration(run_transport_s)}",
-                f"trasa: {_format_distance(dist_m)} · {route.hops} hop",
-                f"radio ~{_format_distance(radio_range_m)}",
-            ]
+                dist_m += float(np.hypot(px_h - fx, py_h - fy))
+            if route.is_rcb_broadcast and rcb_state is not None:
+                hud_lines = [
+                    "ALERT RCB → story (broadcast)",
+                    RCB_MESSAGE,
+                    f"odebrane: {len(rcb_state.received)}/{len(rcb_state.target_nodes)} · "
+                    f"każdy węzeł raz",
+                    f"transport: {_format_duration(run_transport_s)}",
+                ]
+            else:
+                hud_lines = [
+                    f"transport: {_format_duration(run_transport_s)}",
+                    f"trasa: {_format_distance(dist_m)} · {route.hops} hop",
+                    f"radio ~{_format_distance(radio_range_m)}",
+                ]
+                if route.is_emergency:
+                    hud_lines.insert(0, "EMERGENCY CONTACT: 112")
+                    hud_lines.insert(1, f"lokalizacja: {_format_coords(route.sos_x_m, route.sos_y_m)}")
             if last_delivery_s is not None and (route.delivered or simulation_done):
                 hud_lines.append(f"poprz.: {_format_duration(last_delivery_s)}")
             hud_text.set_text("\n".join(hud_lines))

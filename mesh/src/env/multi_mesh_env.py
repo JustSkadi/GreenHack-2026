@@ -23,6 +23,10 @@ class Route:
     repeater_sites: list = field(default_factory=list)
     tx_retries: int = 0
     tx_aborts: int = 0
+    is_emergency: bool = False
+    sos_x_m: float = 0.0
+    sos_y_m: float = 0.0
+    is_rcb_broadcast: bool = False
 
     @property
     def active(self) -> bool:
@@ -409,9 +413,89 @@ class MultiMeshEnv:
         route.repeater_sites = []
         route.tx_retries = 0
         route.tx_aborts = 0
+        route.is_emergency = False
+        route.sos_x_m = 0.0
+        route.sos_y_m = 0.0
+        route.is_rcb_broadcast = False
+
+    def _ensure_gossip_for_dest(self, dest: int):
+        if dest not in self.gossip_by_dest:
+            table = {n: self.UNKNOWN_HOPS for n in self.G.nodes}
+            table[dest] = 0
+            self.gossip_by_dest[dest] = table
+
+    def setup_emergency_route(self, route: Route, rng, scale_m: float = 1500.0) -> bool:
+        """Run 2: SOS z telefonu ofiary do stacji ratunkowej 112 (węzeł infrastruktury)."""
+        nodes = list(self.G.nodes)
+        if len(nodes) < 2:
+            return False
+
+        for _ in range(400):
+            station = rng.choice(nodes)
+            candidates = [
+                n for n in nodes
+                if n != station and nx.has_path(self.G, n, station)
+            ]
+            if not candidates:
+                continue
+            src = rng.choice(candidates)
+            pos = nx.get_node_attributes(self.G, "pos")
+
+            route.source = src
+            route.destination = station
+            route.label = "SOS→112"
+            route.color = "#dc2626"
+            route.is_emergency = True
+            route.sos_x_m = float(pos[src][0] * scale_m)
+            route.sos_y_m = float(pos[src][1] * scale_m)
+            self.reset_route(route)
+            route.is_emergency = True
+            route.sos_x_m = float(pos[src][0] * scale_m)
+            route.sos_y_m = float(pos[src][1] * scale_m)
+
+            self.G.nodes[station]["mobility"] = 0.0
+            self.G.nodes[station]["is_112"] = True
+            self.velocities[station] = (0.0, 0.0)
+
+            self._ensure_gossip_for_dest(station)
+            for _ in range(self.gossip_warmup_steps):
+                self.spread_all_gossip()
+            return True
+        return False
+
+    def clear_emergency_markers(self):
+        for n in self.G.nodes:
+            if self.G.nodes[n].get("is_112"):
+                self.G.nodes[n]["is_112"] = False
+                self.G.nodes[n]["mobility"] = float(np.random.uniform(0.0, 1.0))
+
+    def setup_rcb_broadcast(self, route: Route, rng) -> bool:
+        """Run 3: alert RCB ze stacji 112 — flood do wszystkich węzłów w składowej."""
+        nodes = list(self.G.nodes)
+        if not nodes:
+            return False
+
+        self.clear_emergency_markers()
+        station = rng.choice(nodes)
+        route.source = station
+        route.destination = station
+        route.label = "RCB→ALL"
+        route.color = "#f59e0b"
+        route.is_rcb_broadcast = True
+        route.is_emergency = False
+        self.reset_route(route)
+        route.is_rcb_broadcast = True
+        route.current_node = station
+        route.path = [station]
+
+        self.G.nodes[station]["mobility"] = 0.0
+        self.G.nodes[station]["is_112"] = True
+        self.velocities[station] = (0.0, 0.0)
+        return True
 
     def reroll_route_endpoints(self, route: Route, rng) -> bool:
         """Nowa para start/cel na aktualnym grafie — węzły dalej się ruszają."""
+        self.clear_emergency_markers()
         nodes = list(self.G.nodes)
         if len(nodes) < 2:
             return False
@@ -421,7 +505,9 @@ class MultiMeshEnv:
                 route.source = src
                 route.destination = dst
                 route.label = f"{src}→{dst}"
+                route.color = ROUTE_COLORS[0]
                 self.reset_route(route)
+                self._ensure_gossip_for_dest(dst)
                 return True
         return False
 
