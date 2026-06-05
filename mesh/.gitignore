@@ -1,0 +1,6 @@
+.venv/
+wandb/
+outputs/
+__pycache__/
+*.pt
+*.onnx

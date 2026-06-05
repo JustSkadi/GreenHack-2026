@@ -1,0 +1,4 @@
+project: "GreenHackMesh"
+entity: "Marcel-Musialek"
+mode: "online" # Zmień na "disabled" by testować bez neta
+experiment_name: "baseline_mlp"

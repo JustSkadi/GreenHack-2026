@@ -1,0 +1,16 @@
+defaults:
+  - paths: default
+  - logging: default
+  - model: default
+  - env: default
+  - _self_
+
+# Automatyczne tworzenie folderów dla każdego eksperymentu z datą i godziną
+hydra:
+  run:
+    dir: ${paths.log_dir}/${logging.experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${paths.log_dir}/${logging.experiment_name}_sweep/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}
+
+task_name: "train"

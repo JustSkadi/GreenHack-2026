@@ -1,0 +1,16 @@
+[project]
+name = "greenhack-mesh"
+version = "0.1.0"
+description = "RL mesh routing agent — GreenHack"
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "networkx",
+    "hydra-core",
+    "omegaconf",
+    "wandb",
+    "onnx",
+]
+
+[tool.uv]
+package = false
