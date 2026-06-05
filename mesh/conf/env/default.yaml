@@ -1,7 +1,9 @@
 num_nodes: 50
 radius: 0.25
-max_hops: 15
-max_degree: 4
-target_degree: 3
-edge_drop_prob: 0.05
-edge_add_prob: 0.03
+max_hops: 32
+irl_mode: true
+mobility_step: 0.015
+node_drop_prob: 0.003
+max_store_steps: 3
+max_reconnect_attempts: 3
+gossip_warmup_steps: 12

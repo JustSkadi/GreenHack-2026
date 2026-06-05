@@ -1,2 +1,2 @@
 root_dir: ${hydra:runtime.cwd}
-log_dir: ${paths.root_dir}/outputs
+log_dir: ${paths.root_dir}/src/outputs

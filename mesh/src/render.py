@@ -3,76 +3,70 @@ import argparse
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import networkx as nx
-import numpy as np
 import torch
 
-from agent.net import RouterMLP
+from agent.net import TopologyAgent
 from env.mesh_env import MeshEnv
+from router import greedy_action, rl_action
 
-FRAMES_PER_HOP = 15
-FRAMES_PER_RESET = 20
-EDGE_FADE_SPEED = 0.12
-
-
-def _edge_key(u, v):
-    return (u, v) if u < v else (v, u)
-
-
-class EdgeTracker:
-    def __init__(self):
-        self.alpha = {}
-
-    def sync(self, edges, fade_speed=EDGE_FADE_SPEED):
-        target = {_edge_key(u, v): 1.0 for u, v in edges}
-        for key in list(self.alpha):
-            target.setdefault(key, 0.0)
-
-        for key, goal in target.items():
-            current = self.alpha.get(key, 0.0)
-            if current < goal:
-                self.alpha[key] = min(goal, current + fade_speed)
-            elif current > goal:
-                self.alpha[key] = max(goal, current - fade_speed)
-
-        self.alpha = {k: v for k, v in self.alpha.items() if v > 0.01}
+FRAMES_PER_HOP = 12
 
 
 def render():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--weights", type=str, required=True)
-    parser.add_argument("--fps", type=int, default=24)
-    parser.add_argument("--num-nodes", type=int, default=80)
-    parser.add_argument("--frames", type=int, default=600)
+    parser.add_argument("--weights", type=str, default=None)
+    parser.add_argument("--source", type=int, default=None)
+    parser.add_argument("--dest", type=int, default=None)
+    parser.add_argument("--fps", type=int, default=20)
+    parser.add_argument("--frames", type=int, default=400)
+    parser.add_argument(
+        "--router",
+        choices=["greedy", "rl", "auto"],
+        default="greedy",
+        help="greedy=Dijkstra (pewne dostarczenie), rl=model, auto=rl z fallback",
+    )
+    parser.add_argument("--irl", action="store_true", help="Dynamiczny graf (ruch węzłów)")
     args = parser.parse_args()
 
-    net = RouterMLP(input_dim=5, hidden_dim=64)
-    net.load_state_dict(torch.load(args.weights, weights_only=True))
-    net.eval()
+    net = None
+    if args.weights and args.router in ("rl", "auto"):
+        net = TopologyAgent(input_dim=8, hidden_dim=64)
+        net.load_state_dict(torch.load(args.weights, weights_only=True))
+        net.eval()
 
-    env = MeshEnv(num_nodes=args.num_nodes)
-    state, neighbors = env.reset()
+    env = MeshEnv(irl_mode=args.irl)
+    state, neighbors = env.reset(source=args.source, destination=args.dest)
 
-    fig, ax = plt.subplots(figsize=(10, 10))
+    hop_from = env.source
+    hop_to = env.source
+    hop_t = 1.0
+    pending_step = True
+    status = "routing"
+    use_greedy = args.router == "greedy"
+
+    fig, ax = plt.subplots(figsize=(9, 9))
     fig.patch.set_facecolor("#0d1117")
 
-    pos = nx.get_node_attributes(env.G, "pos")
-    edge_tracker = EdgeTracker()
-    edge_tracker.sync(env.G.edges(), fade_speed=1.0)
+    def pick_action():
+        nonlocal use_greedy
+        if use_greedy or net is None:
+            return greedy_action(env, neighbors)
+        action = rl_action(net, state)
+        if args.router == "auto":
+            try:
+                rl_next = neighbors[action]
+                rl_dist = nx.shortest_path_length(env.G, rl_next, env.destination)
+                greedy = greedy_action(env, neighbors)
+                gr_dist = nx.shortest_path_length(
+                    env.G, neighbors[greedy], env.destination
+                )
+                if rl_dist > gr_dist:
+                    return greedy
+            except nx.NetworkXNoPath:
+                return greedy_action(env, neighbors)
+        return action
 
-    hop_from = env.current_node
-    hop_to = env.current_node
-    hop_t = 1.0
-    reset_t = 1.0
-    episode_done = False
-
-    def node_color(n):
-        if n == 0:
-            return "#ff4d4d"
-        if n == env.current_node and hop_t >= 0.99:
-            return "#3dff8a"
-        return "#4a5568"
-
-    def agent_xy():
+    def packet_xy(pos):
         if hop_from == hop_to or hop_t >= 1.0:
             return pos[env.current_node]
         x1, y1 = pos[hop_from]
@@ -80,109 +74,94 @@ def render():
         t = hop_t * hop_t * (3 - 2 * hop_t)
         return x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
 
-    def draw_graph():
+    def draw():
+        pos = nx.get_node_attributes(env.G, "pos")
         ax.clear()
         ax.set_facecolor("#0d1117")
         ax.axis("off")
 
-        static_nodes = [n for n in env.G.nodes if n != env.current_node or hop_t < 0.99]
-        if static_nodes:
-            nx.draw_networkx_nodes(
-                env.G,
-                pos,
-                nodelist=static_nodes,
-                node_color=[node_color(n) for n in static_nodes],
-                node_size=70,
-                ax=ax,
-            )
+        node_colors = []
+        for n in env.G.nodes:
+            if n == env.source:
+                node_colors.append("#3b82f6")
+            elif n == env.destination:
+                node_colors.append("#ef4444")
+            else:
+                node_colors.append("#4b5563")
 
-        for (u, v), alpha in edge_tracker.alpha.items():
-            if alpha <= 0.01:
-                continue
-            x1, y1 = pos[u]
-            x2, y2 = pos[v]
-            ax.plot(
-                [x1, x2],
-                [y1, y2],
-                color="#6b7a99",
-                alpha=alpha * 0.7,
-                linewidth=1.2,
-                zorder=1,
-            )
+        nx.draw_networkx_nodes(env.G, pos, node_color=node_colors, node_size=80, ax=ax)
+        nx.draw_networkx_edges(env.G, pos, edge_color="#374151", alpha=0.6, width=1.2, ax=ax)
 
-        ax.scatter(
-            *agent_xy(),
-            s=180,
-            c="#3dff8a",
-            edgecolors="#ffffff",
-            linewidths=1.0,
-            zorder=5,
-        )
+        for site in env.repeater_sites:
+            rx, ry = site["pos"]
+            ax.scatter(rx, ry, s=400, marker="*", c="#f59e0b", edgecolors="#fff", zorder=6)
 
-        avg_deg = np.mean([d for _, d in env.G.degree()])
+        if len(env.path) > 1:
+            trail_x = [pos[n][0] for n in env.path if n in pos]
+            trail_y = [pos[n][1] for n in env.path if n in pos]
+            ax.plot(trail_x, trail_y, color="#22c55e", alpha=0.5, linewidth=2, zorder=3)
+
+        px, py = packet_xy(pos)
+        ax.scatter(px, py, s=220, c="#22c55e", edgecolors="#ffffff", linewidths=1.5, zorder=5)
+
+        router_name = "greedy" if use_greedy else args.router
         ax.set_title(
-            f"Mesh Routing | hops: {env.hops} | priority: {env.priority} | "
-            f"avg degree: {avg_deg:.1f}",
-            color="#e6edf3",
-            fontsize=13,
-            pad=12,
+            f"X→Y {env.source}→{env.destination} | {status} | router={router_name}",
+            color="#e5e7eb",
+            fontsize=11,
+            pad=10,
         )
-
-    def begin_reset():
-        nonlocal state, neighbors, pos, hop_from, hop_to, hop_t, reset_t, episode_done
-        reset_t = 0.0
-        state, neighbors = env.reset()
-        pos = nx.get_node_attributes(env.G, "pos")
-        hop_from = env.current_node
-        hop_to = env.current_node
-        hop_t = 1.0
-        episode_done = False
-        edge_tracker.sync(env.G.edges(), fade_speed=1.0)
-
-    def begin_hop():
-        nonlocal hop_from, hop_to, hop_t, state, neighbors, episode_done
-        if state is None or not neighbors:
-            begin_reset()
-            return
-
-        with torch.no_grad():
-            action = torch.argmax(net(state)).item()
-
-        hop_from = env.current_node
-        hop_to = neighbors[action]
-        hop_t = 0.0
-
-        state, neighbors, _reward, done = env.step(action, neighbors)
-        edge_tracker.sync(env.G.edges())
-        episode_done = done
 
     def update(_frame):
-        nonlocal hop_t, reset_t
-
-        if reset_t < 1.0:
-            reset_t = min(1.0, reset_t + 1.0 / FRAMES_PER_RESET)
-            edge_tracker.sync(env.G.edges())
-            draw_graph()
-            return
+        nonlocal state, neighbors, hop_from, hop_to, hop_t, pending_step, status
 
         if hop_t < 1.0:
             hop_t = min(1.0, hop_t + 1.0 / FRAMES_PER_HOP)
-            edge_tracker.sync(env.G.edges())
-            draw_graph()
+            draw()
             return
 
-        if episode_done:
-            begin_reset()
-            draw_graph()
+        if env.delivered:
+            status = "dostarczono ✓"
+            draw()
             return
 
-        begin_hop()
-        draw_graph()
+        if env.impossible:
+            status = "IMPOSSIBLE — repeater ★"
+            draw()
+            return
 
+        if pending_step:
+            if state is None or not neighbors:
+                state, neighbors, _r, done = env._handle_disconnect(0.0)
+                if env.impossible:
+                    status = "IMPOSSIBLE — repeater ★"
+                elif not neighbors:
+                    status = "brak sąsiadów"
+                draw()
+                return
+
+            action = pick_action()
+            hop_from = env.current_node
+            hop_to = neighbors[action]
+            hop_t = 0.0
+            pending_step = False
+
+            state, neighbors, _reward, done = env.step(action, neighbors)
+            if env.delivered:
+                status = "dostarczono ✓"
+            elif env.impossible:
+                status = "IMPOSSIBLE — repeater ★"
+            elif done:
+                status = "timeout"
+            draw()
+            return
+
+        pending_step = True
+        draw()
+
+    draw()
     interval = max(1, 1000 // args.fps)
-    anim = animation.FuncAnimation(
-        fig, update, frames=args.frames, interval=interval, blit=False
-    )
+    anim = animation.FuncAnimation(fig, update, frames=args.frames, interval=interval, blit=False)
     plt.tight_layout()
     plt.show()
     return anim
