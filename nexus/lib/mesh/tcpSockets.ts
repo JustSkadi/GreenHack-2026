@@ -89,17 +89,18 @@ function handleIncomingData(data: Buffer | string, remoteIp: string, socket: Tcp
         }
         
         // Reply with PONG immediately, dołączając nasz profil
-        const state = useMeshStore.getState();
+        const { myPhoneNumber, myPublicKey } = useMeshStore.getState();
         Battery.getBatteryLevelAsync().then(level => {
            const myBattery = level > 0 ? Math.round(level * 100) : undefined;
            sendJsonToSocket(socket, { 
              type: 'PONG', 
              timestamp: parsed.timestamp,
-             phone: state.myPhoneNumber,
-             battery: myBattery
+             phone: myPhoneNumber,
+             battery: myBattery,
+             publicKey: myPublicKey
            });
         }).catch(() => {
-           sendJsonToSocket(socket, { type: 'PONG', timestamp: parsed.timestamp, phone: state.myPhoneNumber });
+           sendJsonToSocket(socket, { type: 'PONG', timestamp: parsed.timestamp, phone: myPhoneNumber });
         });
 
       } else if (parsed.type === 'PONG') {

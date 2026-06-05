@@ -1,8 +1,10 @@
+import './crypto-polyfill';
 import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput, Alert } from 'react-native';
 import { useMeshStore } from './stores/meshStore';
 import { initWifiDirect, discoverPeers, connectToPeer, disconnectFromPeer, sendMeshMessage, startAutoMesh, stopAutoMesh } from './lib/mesh/wifiDirect';
+import { encryptE2E, decryptE2E } from './lib/mesh/cryptoAsym';
 
 export default function App() {
   const peers = useMeshStore((state) => state.peers);
@@ -10,7 +12,10 @@ export default function App() {
   const mode = useMeshStore((state) => state.mode);
   const myPhoneNumber = useMeshStore((state) => state.myPhoneNumber);
   const setMyPhoneNumber = useMeshStore((state) => state.setMyPhoneNumber);
+  const mySecretKey = useMeshStore((state) => state.mySecretKey);
+  const meshMessages = useMeshStore((state) => state.meshMessages);
   const [autoMeshActive, setAutoMeshActive] = React.useState(false);
+  const [recipientInput, setRecipientInput] = React.useState('');
 
   // Automatyczna inicjalizacja modułu Wi-Fi Direct przy starcie
   useEffect(() => {
@@ -21,7 +26,7 @@ export default function App() {
     <View style={styles.container}>
       <Text style={styles.title}>Nexus - Sieć Ratunkowa Mesh</Text>
       
-      {/* Profil Użytkownika */}
+      {/* Profil Użytkownika & Szyfrowanie */}
       <View style={styles.profileBox}>
         <Text style={styles.statusText}>Twój Numer Telefonu (ID):</Text>
         <TextInput 
@@ -30,6 +35,16 @@ export default function App() {
           placeholderTextColor="#666"
           value={myPhoneNumber}
           onChangeText={setMyPhoneNumber}
+          keyboardType="phone-pad"
+        />
+        
+        <Text style={[styles.statusText, { marginTop: 10 }]}>Adresat (do kogo wysłać?):</Text>
+        <TextInput 
+          style={styles.phoneInput}
+          placeholder="Wpisz numer (z listy poniżej)"
+          placeholderTextColor="#666"
+          value={recipientInput}
+          onChangeText={setRecipientInput}
           keyboardType="phone-pad"
         />
       </View>
@@ -84,27 +99,94 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Przycisk Testowego JSONa (pojawia się tylko po połączeniu) */}
+      {/* Przycisk Testowego JSONa */}
       {connectedPeers.length > 0 && (
         <View style={styles.buttonRow}>
           <TouchableOpacity style={[styles.button, { backgroundColor: '#9C27B0' }]} onPress={() => {
+            if (!recipientInput) {
+              Alert.alert('Błąd', 'Podaj numer adresata!');
+              return;
+            }
+            
+            // Szukamy klucza publicznego adresata w profilach połączonych urządzeń
+            const targetPeer = connectedPeers.find(p => p.phoneNumber === recipientInput);
+            if (!targetPeer || !targetPeer.publicKey) {
+              Alert.alert('Brak Klucza', 'Odbiorca musi być w sieci (Ping), abyśmy pobrali jego Klucz Publiczny w tle!');
+              return;
+            }
+
+            const rawContent = 'Zlokalizowano potrzebujących. Mam wodę i prąd.';
+            const finalContent = encryptE2E(rawContent, mySecretKey, targetPeer.publicKey);
+            
+            if (!finalContent) {
+              Alert.alert('Błąd', 'Szyfrowanie nie powiodło się.');
+              return;
+            }
+
             sendMeshMessage({
               id: Math.random().toString(36).substring(7),
               senderId: myPhoneNumber || 'nieznany',
+              recipientId: recipientInput,
               senderTier: 4,
-              content: 'Krytyczny Alert: Zlokalizowano potrzebujących!',
-              encrypted: false,
-              isPriority: true,
+              content: finalContent,
+              encrypted: true,
+              isPriority: false,
               trustScore: 100,
               hops: [myPhoneNumber || 'nieznany'],
               ttl: 5,
               timestamp: Date.now()
             });
+            Alert.alert('Wysłano', 'Wiadomość została zaszyfrowana kluczem odbiorcy i puszczona w sieć!');
           }}>
-            <Text style={styles.buttonText}>Symuluj Packet-Hopping (SOS)</Text>
+            <Text style={styles.buttonText}>Wyślij Prywatną (E2E)</Text>
           </TouchableOpacity>
         </View>
       )}
+
+      {/* Odebrane Wiadomości (Skrzynka) */}
+      <Text style={styles.subtitle}>Wiadomości (Flooding):</Text>
+      <ScrollView style={[styles.scrollContainer, { maxHeight: 200, marginBottom: 10 }]}>
+        {meshMessages.length === 0 ? (
+          <Text style={styles.emptyText}>Brak pakietów w eterze.</Text>
+        ) : (
+          meshMessages.map((msg, idx) => {
+            // Próba deszyfrowania E2E w locie
+            let displayContent = msg.content;
+            let isDecrypted = false;
+            
+            if (msg.encrypted) {
+              if (msg.recipientId === myPhoneNumber) {
+                // To do mnie! Szukam publicznego klucza NADAWCY, by to odszyfrować
+                const senderPeer = connectedPeers.find(p => p.phoneNumber === msg.senderId);
+                if (senderPeer && senderPeer.publicKey) {
+                  const decryptedText = decryptE2E(msg.content, mySecretKey, senderPeer.publicKey);
+                  if (decryptedText) {
+                    displayContent = decryptedText;
+                    isDecrypted = true;
+                  } else {
+                    displayContent = '[🔒 Uszkodzona treść]';
+                  }
+                } else {
+                  displayContent = '[🔒 Trwa szukanie klucza nadawcy...]';
+                }
+              } else {
+                // To NIE JEST do mnie. Pełnię tylko rolę rutera.
+                displayContent = `[🔒 List prywatny do ${msg.recipientId}]`;
+              }
+            }
+
+            return (
+              <View key={idx} style={styles.messageCard}>
+                <Text style={styles.messageSender}>{msg.senderId} ➔ {msg.recipientId} {msg.isPriority ? '🔴 SOS' : ''}</Text>
+                <Text style={[styles.messageContent, msg.encrypted && !isDecrypted && { color: '#F44336' }]}>
+                  {displayContent}
+                </Text>
+                <Text style={styles.messageMeta}>Trasa (Hops): {msg.hops.join(' > ')}</Text>
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
 
       {/* Lista wykrytych urządzeń */}
       <Text style={styles.subtitle}>Wykryte urządzenia w pobliżu ({peers.length}):</Text>
@@ -251,5 +333,28 @@ const styles = StyleSheet.create({
   connectButtonText: {
     color: '#ffffff',
     fontWeight: 'bold',
+  },
+  messageCard: {
+    backgroundColor: '#262626',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: '#9C27B0',
+  },
+  messageSender: {
+    color: '#aaaaaa',
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  messageContent: {
+    color: '#ffffff',
+    fontSize: 15,
+  },
+  messageMeta: {
+    color: '#666666',
+    fontSize: 10,
+    marginTop: 6,
   },
 });

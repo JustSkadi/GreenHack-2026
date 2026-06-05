@@ -1,24 +1,27 @@
 import { create } from 'zustand';
+import { generateKeyPair } from '../lib/mesh/cryptoAsym';
 
 export interface Peer {
   deviceAddress: string;
   deviceName: string;
-  battery?: number; // state for RL routing routing table
-  degree?: number;  // degree of node connectivity
-  latency?: number; // RTT ping w ms do pomiaru sily sygnalu
-  phoneNumber?: string; // nr telefonu z profilu
+  degree?: number;
+  latency?: number;
+  phoneNumber?: string;
+  battery?: number;
+  publicKey?: string;
 }
 
 export interface MeshMessage {
   id: string;
   senderId: string;
-  senderTier: number; // 1=gov, 2=inst, 3=comm, 4=user
+  recipientId: string; // Adresat wiadomości
+  senderTier: number;
   content: string;
   encrypted: boolean;
   groupId?: string;
   isPriority: boolean;
   trustScore: number;
-  hops: string[]; // history of visited nodes to prevent loops
+  hops: string[];
   ttl: number;
   timestamp: number;
 }
@@ -37,9 +40,13 @@ interface MeshState {
   clearMessages: () => void;
   updatePeerLatency: (deviceAddress: string, latency: number) => void;
   myPhoneNumber: string;
+  myPublicKey: string;
+  mySecretKey: string;
   setMyPhoneNumber: (phone: string) => void;
-  updatePeerProfile: (deviceAddress: string, phoneNumber?: string, battery?: number) => void;
+  updatePeerProfile: (deviceAddress: string, phoneNumber?: string, battery?: number, publicKey?: string) => void;
 }
+
+const initialKeys = generateKeyPair();
 
 export const useMeshStore = create<MeshState>((set) => ({
   mode: 'online',
@@ -48,12 +55,13 @@ export const useMeshStore = create<MeshState>((set) => ({
   routingMode: 'flooding',
   meshMessages: [],
   myPhoneNumber: '',
+  myPublicKey: initialKeys.publicKey,
+  mySecretKey: initialKeys.secretKey,
   setMyPhoneNumber: (phone) => set({ myPhoneNumber: phone }),
   setMode: (mode) => set({ mode }),
   setPeers: (peers) => set({ peers }),
   addConnectedPeer: (peer) =>
     set((state) => {
-      // Avoid duplicates
       const exists = state.connectedPeers.some((p) => p.deviceAddress === peer.deviceAddress);
       if (exists) return state;
       return { connectedPeers: [...state.connectedPeers, peer] };
@@ -64,7 +72,6 @@ export const useMeshStore = create<MeshState>((set) => ({
     })),
   addMessage: (message) =>
     set((state) => {
-      // Avoid duplicate messages
       const exists = state.meshMessages.some((m) => m.id === message.id);
       if (exists) return state;
       return { meshMessages: [...state.meshMessages, message] };
@@ -79,10 +86,23 @@ export const useMeshStore = create<MeshState>((set) => ({
         p.deviceAddress === deviceAddress ? { ...p, latency } : p
       ),
     })),
-  updatePeerProfile: (deviceAddress, phoneNumber, battery) =>
-    set((state) => ({
-      connectedPeers: state.connectedPeers.map((p) =>
-        p.deviceAddress === deviceAddress ? { ...p, ...(phoneNumber && { phoneNumber }), ...(battery !== undefined && { battery }) } : p
-      ),
-    })),
+  updatePeerProfile: (deviceAddress, phoneNumber, battery, publicKey) =>
+    set((state) => {
+      const peerExists = state.connectedPeers.find((p) => p.deviceAddress === deviceAddress);
+      if (peerExists) {
+        return {
+          connectedPeers: state.connectedPeers.map((p) =>
+            p.deviceAddress === deviceAddress
+              ? {
+                  ...p,
+                  phoneNumber: phoneNumber !== undefined ? phoneNumber : p.phoneNumber,
+                  battery: battery !== undefined ? battery : p.battery,
+                  publicKey: publicKey !== undefined ? publicKey : p.publicKey,
+                }
+              : p
+          ),
+        };
+      }
+      return state;
+    }),
 }));
