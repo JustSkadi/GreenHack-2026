@@ -1,0 +1,45 @@
+Opis challengu: BlackOut Prague
+Design a practical solution that helps cities, institutions, and communities prepare for blackouts and cascading crises. Improve resilience, coordination, and communication when critical systems fail—and turn disruption into faster, smarter response.
+
+Nasz pomysł:
+Aplikacja ratunkowa / pomocnicza w razie kryzysów ( szczególnie blackoutów ) lub w czasie przed kryzysami:
+1. Tryb OFFLINE vs ONLINE
+	a. ONLINE - w momencie, w którym nie ma blackoutu / innej katastrofy przez którą nie działa komunikacja klasyczna:
+		- Chatbot na droższym, silniejszym modelu AI, którego głównym zadaniem jest odpowiadanie na pytania użytkowników co zrobić w razie X kryzysu, jak się przygotować, doradztwo etc.
+		- Klasyczna komunikacja
+	b. OFFLINE - CZĘŚĆ WAŻNIEJSZA - trakcie kiedy trwa blackout / nie ma możliwości klasycznej komunikacji:
+		- Chatbot LOKALNY - na słabszym, ale zajmującym mniej pamięci modelu AI, którego zadaniem tak jak w wersji ONLINE jest odpowiadanie na pytania co zrobić w trakcie sytuacji kryzysowej + gdzie się udać w razie katastrofy, krok po kroku jak udzielić komuś konkretnej pomocy etc.
+		- Komunikacja przez WIFI DIRECT ( bez potrzeby elektryczności ) - używamy modelu ML do tworzenia grafowej sieci neuronowej ( backbone całej naszej aplikacji ), w której wierzchołki to urządzenia danych użytkowników np. telefony, a krawędzie to odległość między nimi ( max 100 m dla WIFI DIRECT ). Komunikacja odbywa się przez ten graf, bez potrzeby użycia elektryczności, wystarczy naładowany telefon
+
+WAŻNE UWAGI DO TRYBU OFFLINE:
+	- Musi być zaimplementowany TROLL DETECTION ( np. przez AI lub nasz własny wytrenowany model ), aby w sytuacji kryzysowej zminimalizować możliwość dezinformacji
+	- Oprócz tego co wyżej, w komunikacji w trybie OFFLINE potrzebujemy systemu hierarchi użytkowników np. najważneijsze przekazywane informacje są od zweryfikowanych urządzeń od zarządu państwa ( government ), co jest powiązane z TROLL DETECTION oraz związane z ewentualnym wysyłaniem WIADOMOŚCI PRIORYTETOWYCH tak jak działają aktualnie alerty RCB
+	- Przyda się KOMUNIKACJA RODZINNA połączona z ENKRYPCJĄ WIADOMOŚCI np. członkowie jednej rodziny mieszkający w tym samym bloku mogą się ze sobą komunikować bez ryzyka, że ktoś z zewnątrz przechwyci ich informacje, czyli KOMUNIKACJA W GRUPIE
+	- sama aplikacja, ponieważ musi działać też na słabszych telefonach nie może ważyć za dużo GB, więc musimy ją poprawnie zoptymalizować
+
+DO OBU TRYBÓW:
+	- ważną osobną stroną w tej aplikacji będzie strona z CHECKLISTĄ, w której government wypisuje co należy zrobić, aby przygotować się do danej katastrofy np. kup zapas wody X litrów per osoba, kup jedzenie, ale na bieżąco je zjadaj i dokupuj nowe, co w apteczce mieć, miej naładowany powerbank etc. - do produktów spożywczych niech manulanie wprowadzane są daty ważności danych produktów, a aplikacja niech wysyła powiadomienia, jeśli dana data się kończy np. za tydzień
+
+NA PRZYSZŁOŚĆ ( bradziej wspomnieć na pitchu / prezentacji niż implementować teraz ):
+	- Zamiast WIFI DIRECT, jeśli dane miasto ma środki to może spróbować zaimplementować STARLINKI ( KOMUNIKACJĘ SATELITARNĄ, gdzie starlinki ładowane są energią solarną )
+	- Prize system, czyli np. jeśli starsza z danego bloku mieszkalnego osoba wysyła w aplikacji prośbę / wiadomośc o potrzebie zakupu leków, to ktoś inny z okolicy może jej je kupić i przynieść za co dostaje punkty / zniżki w sklepie
+	- zamiast osobnej aplikacji może być integracja np. z mObywatelem / aplikacjami bankowymi w danym kraju
+	- coś związanego z dostępem do wody / gromawdzeniem wody / studniami etc., bo po wojnie na Ukrainie widać, że to co podczas kryzysu jest najważniejsze to właśnie dostęp do wody ( info o Ukraińcach dodać do prezki na początku / końcu )
+
+UWAGA!!!!!
+Zdajemy sobie sprawę, że to zadziała tylko np. w dużych, mocno zagęszczonych miastach, dlatego mamy 2 propozycje, w razie jakby zamiast jednego grafu tworzyły się pomniejsze:
+	1. Na lampach / słupach napędanych ich własnymi panelami słoencznymi dodać urządzenia, które są zasilane właśnie tymi solarami - odporne na blackout, a pomagają tworzyć "mosty" między oddzielonymi grafami
+	2. Ustawione przez government auta, które przemieszają się po osiedlach służąc ponownie za "mosty" między grafami
+
+
+
+Aplikację wyobrażamy sobie tak:
+Strona główna: 1 duży przycisk "Ratunku", który po kliknięciu automatycznie łączy z telefonem ratunkowym w danym kraju
+
+Strona nr 2: komunikator opisany wyżej ( możliwość przełączenia między trybem offline i online )
+
+Strona nr 3: Checklista opisana wyżej ( zrób dokładny research co oprócz tego co wypisałam może się w niej znaleźć )
+
+Strona nr 4: Chatbot AI dostępny w ramach bąbelka w prawym górnym rogu ekranu ( tryb offline i online )
+
+Strona nr 5: (ewentualnie, na przyszłość ) mapka z punktami grafu, punktami poboru wody, jedzenia, szpitalami etc.
