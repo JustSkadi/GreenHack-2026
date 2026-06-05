@@ -10,6 +10,10 @@ import {
 } from 'react-native-wifi-p2p';
 import { PermissionsAndroid, Platform } from 'react-native';
 import { useMeshStore, Peer, MeshMessage } from '../../stores/meshStore';
+import { startTcpServer, connectTcpClient, stopTcp, sendTcpMessage } from './tcpSockets';
+
+let autoMeshInterval: NodeJS.Timeout | null = null;
+let isConnecting = false;
 
 // 1. Android runtime permissions request
 export async function requestP2pPermissions(): Promise<boolean> {
@@ -75,16 +79,26 @@ export async function initWifiDirect() {
         console.log('Wi-Fi Direct: Grupa utworzona. Group Owner Address:', ownerIp);
         console.log('Wi-Fi Direct: Czy jestem Group Ownerem?:', info.isGroupOwner);
         
+        // Start TCP Server or Client based on role
+        if (info.isGroupOwner) {
+          startTcpServer();
+        } else {
+          if (ownerIp !== 'unknown') {
+            connectTcpClient(ownerIp);
+          }
+        }
+        
         // Mocking client details for connected peers
         const connectedPeer: Peer = {
           deviceAddress: ownerIp,
-          deviceName: info.isGroupOwner ? 'Client Node' : 'Group Owner Node',
+          deviceName: info.isGroupOwner ? 'Zarządca Sieci' : 'Węzeł Mesh',
         };
         useMeshStore.getState().addConnectedPeer(connectedPeer);
       } else {
         console.log('Wi-Fi Direct: Połączenie zerwane.');
         // Wyczyść połączone urządzenia w store
         useMeshStore.getState().setPeers([]);
+        stopTcp();
       }
     });
   } catch (err) {
@@ -132,9 +146,59 @@ export async function disconnectFromPeer() {
   }
 }
 
-// 7. Send message via mesh
-// W prawdziwej implementacji tu otworzysz Socket TCP do Group Ownera na porcie np. 8888.
-// Jako że to hackathon, przygotowaliśmy uproszczony model przesyłania danych w grafie.
+// 7. Auto-Mesh (Automatyczne wyszukiwanie i łączenie)
+export function startAutoMesh() {
+  if (autoMeshInterval) return;
+  console.log('Wi-Fi Direct: Uruchamiam Auto-Mesh...');
+  
+  // Pierwsze wyszukiwanie na start
+  discoverPeers();
+
+  autoMeshInterval = setInterval(() => {
+    const { connectedPeers, peers } = useMeshStore.getState();
+
+    // Jeśli jesteśmy już połączeni z kimkolwiek, przerywamy pętlę dla tej iteracji (aby nie psuć połączenia)
+    if (connectedPeers.length > 0) return;
+    
+    // Jeśli aktualnie przetwarzamy łączenie, czekamy
+    if (isConnecting) return;
+
+    if (peers.length > 0) {
+      // Mamy kogoś w zasięgu! Zapobiegamy kolizji stosując "Random Backoff" (Losowe opóźnienie 1-5s)
+      const targetPeer = peers[0].deviceAddress;
+      isConnecting = true;
+      const delay = Math.floor(Math.random() * 4000) + 1000;
+      
+      console.log(`Wi-Fi Direct: Wykryto ${targetPeer}. Auto-Mesh czeka ${delay}ms przed połączeniem (uniknięcie kolizji)...`);
+      
+      setTimeout(() => {
+        // Podwójne sprawdzenie na wypadek gdyby w trakcie pauzy ktoś się z nami połączył
+        if (useMeshStore.getState().connectedPeers.length === 0) {
+          connectToPeer(targetPeer).finally(() => {
+            // Zwalniamy blokadę dopiero po 15 sekundach, aby dać czas użytkownikowi drugiego urządzenia na kliknięcie "Akceptuj"
+            setTimeout(() => { isConnecting = false; }, 15000);
+          });
+        } else {
+          isConnecting = false;
+        }
+      }, delay);
+    } else {
+      // Nikogo nie ma, skanujemy dalej
+      discoverPeers();
+    }
+  }, 8000); // Pętla co 8 sekund
+}
+
+export function stopAutoMesh() {
+  if (autoMeshInterval) {
+    clearInterval(autoMeshInterval);
+    autoMeshInterval = null;
+    console.log('Wi-Fi Direct: Auto-Mesh zatrzymany.');
+  }
+}
+
+// 8. Send message via mesh
+// Zastąpiliśmy uproszczony model natywnym przesyłem przez gniazda TCP
 export async function sendMeshMessage(message: MeshMessage) {
   try {
     console.log('Wi-Fi Direct: Wysyłanie wiadomości mesh:', message);
@@ -142,9 +206,10 @@ export async function sendMeshMessage(message: MeshMessage) {
     // Dodaj do lokalnego sklepu stanu
     useMeshStore.getState().addMessage(message);
 
-    // TODO: Zaimplementuj natywny przesył danych socketami TCP lub wywołaj LAN Simulation fallback
-    // Poniżej mock/logika dla jury:
-    console.log(`Wiadomość "${message.content}" wysłana do sąsiadów w zasięgu.`);
+    // Natywny przesył JSON przez TCP
+    sendTcpMessage(message);
+    
+    console.log(`Wiadomość została wysłana przez gniazdo TCP.`);
   } catch (err) {
     console.error('Wi-Fi Direct: Błąd wysyłania wiadomości:', err);
   }

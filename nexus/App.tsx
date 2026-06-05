@@ -1,13 +1,16 @@
 import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput } from 'react-native';
 import { useMeshStore } from './stores/meshStore';
-import { initWifiDirect, discoverPeers, connectToPeer, disconnectFromPeer } from './lib/mesh/wifiDirect';
+import { initWifiDirect, discoverPeers, connectToPeer, disconnectFromPeer, sendMeshMessage, startAutoMesh, stopAutoMesh } from './lib/mesh/wifiDirect';
 
 export default function App() {
   const peers = useMeshStore((state) => state.peers);
   const connectedPeers = useMeshStore((state) => state.connectedPeers);
   const mode = useMeshStore((state) => state.mode);
+  const myPhoneNumber = useMeshStore((state) => state.myPhoneNumber);
+  const setMyPhoneNumber = useMeshStore((state) => state.setMyPhoneNumber);
+  const [autoMeshActive, setAutoMeshActive] = React.useState(false);
 
   // Automatyczna inicjalizacja modułu Wi-Fi Direct przy starcie
   useEffect(() => {
@@ -16,31 +19,92 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Nexus - Tester Wi-Fi Direct</Text>
+      <Text style={styles.title}>Nexus - Sieć Ratunkowa Mesh</Text>
       
+      {/* Profil Użytkownika */}
+      <View style={styles.profileBox}>
+        <Text style={styles.statusText}>Twój Numer Telefonu (ID):</Text>
+        <TextInput 
+          style={styles.phoneInput}
+          placeholder="+48 000 000 000"
+          placeholderTextColor="#666"
+          value={myPhoneNumber}
+          onChangeText={setMyPhoneNumber}
+          keyboardType="phone-pad"
+        />
+      </View>
+
       {/* Mesh Status */}
       <View style={styles.statusBox}>
         <Text style={styles.statusText}>Tryb: <Text style={styles.bold}>{mode.toUpperCase()}</Text></Text>
         <Text style={styles.statusText}>
           Połączone urządzenia: <Text style={styles.bold}>{connectedPeers.length}</Text>
         </Text>
-        {connectedPeers.map((cp, idx) => (
-          <Text key={idx} style={styles.connectedDevice}>
-            ● {cp.deviceName} ({cp.deviceAddress})
-          </Text>
-        ))}
+        {connectedPeers.map((cp, idx) => {
+          const latencyText = cp.latency === undefined || cp.latency < 0 
+            ? '⏳ Łączenie...' 
+            : cp.latency < 100 ? `🟢 ${cp.latency} ms` : cp.latency < 500 ? `🟡 ${cp.latency} ms` : `🔴 ${cp.latency} ms`;
+
+          const phoneText = cp.phoneNumber ? `(${cp.phoneNumber})` : '';
+          const batteryText = cp.battery !== undefined ? `🔋 ${cp.battery}%` : '';
+
+          return (
+            <Text key={idx} style={styles.connectedDevice}>
+              ● {cp.deviceName} {phoneText} - {batteryText} - {latencyText}
+            </Text>
+          );
+        })}
       </View>
 
       {/* Przyciski kontrolne */}
       <View style={styles.buttonRow}>
-        <TouchableOpacity style={styles.button} onPress={() => discoverPeers()}>
-          <Text style={styles.buttonText}>Skanuj urządzenia</Text>
+        <TouchableOpacity 
+          style={[styles.button, autoMeshActive ? { backgroundColor: '#FF9800' } : { backgroundColor: '#2196F3' }]} 
+          onPress={() => {
+            if (autoMeshActive) {
+              stopAutoMesh();
+              setAutoMeshActive(false);
+            } else {
+              startAutoMesh();
+              setAutoMeshActive(true);
+            }
+          }}
+        >
+          <Text style={styles.buttonText}>{autoMeshActive ? 'Zatrzymaj Auto-Mesh' : 'Start Auto-Mesh'}</Text>
         </TouchableOpacity>
         
-        <TouchableOpacity style={[styles.button, styles.dangerButton]} onPress={() => disconnectFromPeer()}>
+        <TouchableOpacity style={[styles.button, styles.dangerButton]} onPress={() => {
+          disconnectFromPeer();
+          if (autoMeshActive) {
+            stopAutoMesh();
+            setAutoMeshActive(false);
+          }
+        }}>
           <Text style={styles.buttonText}>Rozłącz</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Przycisk Testowego JSONa (pojawia się tylko po połączeniu) */}
+      {connectedPeers.length > 0 && (
+        <View style={styles.buttonRow}>
+          <TouchableOpacity style={[styles.button, { backgroundColor: '#9C27B0' }]} onPress={() => {
+            sendMeshMessage({
+              id: Math.random().toString(36).substring(7),
+              senderId: myPhoneNumber || 'nieznany',
+              senderTier: 4,
+              content: 'Krytyczny Alert: Zlokalizowano potrzebujących!',
+              encrypted: false,
+              isPriority: true,
+              trustScore: 100,
+              hops: [myPhoneNumber || 'nieznany'],
+              ttl: 5,
+              timestamp: Date.now()
+            });
+          }}>
+            <Text style={styles.buttonText}>Symuluj Packet-Hopping (SOS)</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Lista wykrytych urządzeń */}
       <Text style={styles.subtitle}>Wykryte urządzenia w pobliżu ({peers.length}):</Text>
@@ -103,6 +167,19 @@ const styles = StyleSheet.create({
     color: '#cccccc',
     fontSize: 16,
     marginBottom: 5,
+  },
+  profileBox: {
+    marginBottom: 15,
+  },
+  phoneInput: {
+    backgroundColor: '#1e1e1e',
+    color: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#333',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    marginTop: 5,
   },
   bold: {
     fontWeight: 'bold',

@@ -5,6 +5,8 @@ export interface Peer {
   deviceName: string;
   battery?: number; // state for RL routing routing table
   degree?: number;  // degree of node connectivity
+  latency?: number; // RTT ping w ms do pomiaru sily sygnalu
+  phoneNumber?: string; // nr telefonu z profilu
 }
 
 export interface MeshMessage {
@@ -33,6 +35,10 @@ interface MeshState {
   removeConnectedPeer: (deviceAddress: string) => void;
   addMessage: (message: MeshMessage) => void;
   clearMessages: () => void;
+  updatePeerLatency: (deviceAddress: string, latency: number) => void;
+  myPhoneNumber: string;
+  setMyPhoneNumber: (phone: string) => void;
+  updatePeerProfile: (deviceAddress: string, phoneNumber?: string, battery?: number) => void;
 }
 
 export const useMeshStore = create<MeshState>((set) => ({
@@ -41,6 +47,8 @@ export const useMeshStore = create<MeshState>((set) => ({
   connectedPeers: [],
   routingMode: 'flooding',
   meshMessages: [],
+  myPhoneNumber: '',
+  setMyPhoneNumber: (phone) => set({ myPhoneNumber: phone }),
   setMode: (mode) => set({ mode }),
   setPeers: (peers) => set({ peers }),
   addConnectedPeer: (peer) =>
@@ -62,4 +70,19 @@ export const useMeshStore = create<MeshState>((set) => ({
       return { meshMessages: [...state.meshMessages, message] };
     }),
   clearMessages: () => set({ meshMessages: [] }),
+  updatePeerLatency: (deviceAddress, latency) =>
+    set((state) => ({
+      connectedPeers: state.connectedPeers.map((p) =>
+        p.deviceAddress === deviceAddress ? { ...p, latency } : p
+      ),
+      peers: state.peers.map((p) =>
+        p.deviceAddress === deviceAddress ? { ...p, latency } : p
+      ),
+    })),
+  updatePeerProfile: (deviceAddress, phoneNumber, battery) =>
+    set((state) => ({
+      connectedPeers: state.connectedPeers.map((p) =>
+        p.deviceAddress === deviceAddress ? { ...p, ...(phoneNumber && { phoneNumber }), ...(battery !== undefined && { battery }) } : p
+      ),
+    })),
 }));
