@@ -52,7 +52,9 @@ class RcbBroadcast:
     target_nodes: set[int]
     received: set[int] = field(default_factory=set)
     hop_queue: list[tuple[int, int]] = field(default_factory=list)
-    in_flight_to: set[int] = field(default_factory=set)
+    wave_front: set[int] = field(default_factory=set)
+    wave_num: int = 0
+    wave_scheduled: set[int] = field(default_factory=set)
     counted: bool = False
 
 
@@ -379,14 +381,34 @@ def render_multi():
                 return greedy_to(env.G, neighbors, route.destination, env.max_hops)
         return action
 
-    def _rcb_expand_from(node: int):
+    def _rcb_build_wave():
+        """Fala kaskadowa: tylko wave_front przekazuje do bezpośrednich sąsiadów."""
         if rcb_state is None:
             return
-        for n in env.G.neighbors(node):
-            if n in rcb_state.received or n in rcb_state.in_flight_to:
+        rcb_state.hop_queue.clear()
+        rcb_state.wave_scheduled.clear()
+        for src in sorted(rcb_state.wave_front):
+            if src not in rcb_state.received:
                 continue
-            rcb_state.hop_queue.append((node, n))
-            rcb_state.in_flight_to.add(n)
+            for n in env.G.neighbors(src):
+                if n in rcb_state.received or n in rcb_state.wave_scheduled:
+                    continue
+                rcb_state.hop_queue.append((src, n))
+                rcb_state.wave_scheduled.add(n)
+
+    def _rcb_advance_wave() -> bool:
+        """Po zakończeniu fali — nadawcami stają się węzły, które właśnie odebrały alert."""
+        if rcb_state is None:
+            return False
+        pending = rcb_state.wave_scheduled - rcb_state.received
+        if pending:
+            return False
+        if not rcb_state.wave_scheduled:
+            return False
+        rcb_state.wave_front = set(rcb_state.wave_scheduled)
+        rcb_state.wave_num += 1
+        _rcb_build_wave()
+        return bool(rcb_state.hop_queue)
 
     def _setup_rcb_run():
         nonlocal rcb_state, endpoints, pending_hop_to, run_transport_s
@@ -398,8 +420,10 @@ def render_multi():
             message=RCB_MESSAGE,
             target_nodes=set(component),
             received={station},
+            wave_front={station},
+            wave_num=1,
         )
-        _rcb_expand_from(station)
+        _rcb_build_wave()
         pending_hop_to = None
         run_transport_s = 0.0
         endpoints = {station}
@@ -509,7 +533,6 @@ def render_multi():
                 and not env.hop_edge_ok(route, packet.hop_from, packet.hop_to)
             ):
                 to_n = pending_hop_to
-                rcb_state.in_flight_to.discard(to_n)
                 rcb_state.hop_queue.insert(0, (packet.hop_from, to_n))
                 packet.hop_t = 1.0
                 packet.hop_to = packet.hop_from
@@ -522,10 +545,8 @@ def render_multi():
             if prev_t < 1.0 <= packet.hop_t and pending_hop_to is not None:
                 to_n = pending_hop_to
                 rcb_state.received.add(to_n)
-                rcb_state.in_flight_to.discard(to_n)
                 if to_n not in route.path:
                     route.path.append(to_n)
-                _rcb_expand_from(to_n)
                 pending_hop_to = None
             sync_artists()
             return
@@ -546,25 +567,39 @@ def render_multi():
             return
 
         if rcb_state and rcb_state.hop_queue:
-            from_n, to_n = rcb_state.hop_queue.pop(0)
-            if to_n in rcb_state.received:
-                rcb_state.in_flight_to.discard(to_n)
-            elif env.G.has_edge(from_n, to_n):
-                packet.hop_from = from_n
-                packet.hop_to = to_n
-                packet.hop_t = 0.0
-                pending_hop_to = to_n
-            else:
-                rcb_state.in_flight_to.discard(to_n)
-                _rcb_expand_from(from_n)
-        elif (
-            rcb_state
-            and not _is_hopping()
-            and len(rcb_state.received) < len(rcb_state.target_nodes)
-        ):
-            for n in list(rcb_state.received):
-                _rcb_expand_from(n)
-            if not rcb_state.hop_queue:
+            while rcb_state.hop_queue:
+                from_n, to_n = rcb_state.hop_queue.pop(0)
+                if to_n in rcb_state.received:
+                    continue
+                if env.G.has_edge(from_n, to_n):
+                    packet.hop_from = from_n
+                    packet.hop_to = to_n
+                    packet.hop_t = 0.0
+                    pending_hop_to = to_n
+                    break
+                rcb_state.hop_queue.append((from_n, to_n))
+                break
+        elif rcb_state and not _is_hopping():
+            if rcb_state.wave_scheduled and rcb_state.wave_scheduled <= rcb_state.received:
+                if _rcb_advance_wave():
+                    pass
+                elif len(rcb_state.received) >= len(rcb_state.target_nodes):
+                    route.delivered = True
+                    last_delivery_s = run_transport_s
+                    if not rcb_state.counted:
+                        runs_completed += 1
+                        rcb_state.counted = True
+                    if runs_completed >= max_runs:
+                        simulation_done = True
+                else:
+                    route.delivered = True
+                    last_delivery_s = run_transport_s
+                    if not rcb_state.counted:
+                        runs_completed += 1
+                        rcb_state.counted = True
+                    if runs_completed >= max_runs:
+                        simulation_done = True
+            elif not rcb_state.wave_scheduled:
                 route.delivered = True
                 last_delivery_s = run_transport_s
                 if not rcb_state.counted:
@@ -767,8 +802,8 @@ def render_multi():
                 max_r = max(dists) if dists else scale_m * 0.25
             else:
                 max_r = scale_m * 0.25
-            prog = len(rcb_state.received) / max(1, len(rcb_state.target_nodes))
-            radius = max_r * (0.1 + 0.9 * prog)
+            prog = rcb_state.wave_num / max(1, rcb_state.wave_num + 2)
+            radius = max_r * (0.08 + 0.92 * prog)
             if wave_circle is None:
                 wave_circle = mpatches.Circle(
                     (sx, sy), radius,
@@ -798,13 +833,22 @@ def render_multi():
         if route.is_rcb_broadcast and rcb_state is not None:
             if route.delivered and not _is_hopping():
                 st = "OK"
-                phase = f"fala RCB · {len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
+                phase = (
+                    f"fala {rcb_state.wave_num} · "
+                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
+                )
             elif _is_hopping():
                 st = "~~~"
-                phase = f"fala RCB · {len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
+                phase = (
+                    f"kaskada fala {rcb_state.wave_num} · "
+                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)}"
+                )
             else:
                 st = "~~~"
-                phase = f"fala RCB · {len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
+                phase = (
+                    f"kaskada fala {rcb_state.wave_num} · "
+                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)}"
+                )
         elif route.is_emergency:
             if route.delivered and not _is_hopping():
                 st = "SOS OK"
@@ -850,10 +894,10 @@ def render_multi():
                 dist_m += float(np.hypot(px_h - fx, py_h - fy))
             if route.is_rcb_broadcast and rcb_state is not None:
                 hud_lines = [
-                    "ALERT RCB → story (broadcast)",
+                    "ALERT RCB → story (kaskada hop po hop)",
                     RCB_MESSAGE,
-                    f"odebrane: {len(rcb_state.received)}/{len(rcb_state.target_nodes)} · "
-                    f"każdy węzeł raz",
+                    f"fala {rcb_state.wave_num} · "
+                    f"odebrane: {len(rcb_state.received)}/{len(rcb_state.target_nodes)}",
                     f"transport: {_format_duration(run_transport_s)}",
                 ]
             else:
