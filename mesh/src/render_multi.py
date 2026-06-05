@@ -39,10 +39,18 @@ FINISH_HOLD_FRAMES = 4
 STATION_112_SIZE = 1500
 EMERGENCY_RUN_INDEX = 1
 RCB_BROADCAST_RUN_INDEX = 2
+RCB_PHYSICS_EVERY = 8
 RCB_MESSAGE = (
     "RCB: Awaryjne ostrzeżenie — zagrożenie powodziowe w regionie. "
     "Evakuuj się na wyżyny. Unikaj wód i niżów. Strefa: obszar mesh."
 )
+
+
+@dataclass
+class RcbHop:
+    hop_from: int
+    hop_to: int
+    hop_t: float = 0.0
 
 
 @dataclass
@@ -51,7 +59,7 @@ class RcbBroadcast:
     message: str
     target_nodes: set[int]
     received: set[int] = field(default_factory=set)
-    hop_queue: list[tuple[int, int]] = field(default_factory=list)
+    active_hops: list[RcbHop] = field(default_factory=list)
     wave_front: set[int] = field(default_factory=set)
     wave_num: int = 0
     wave_scheduled: set[int] = field(default_factory=set)
@@ -171,12 +179,22 @@ class PacketAnim:
     hop_t: float = 1.0
 
 
+def _hop_xy(hop_from: int, hop_to: int, hop_t: float, pos: dict) -> tuple[float, float]:
+    if hop_t < 1.0 and hop_from in pos and hop_to in pos:
+        t = _smoothstep(hop_t)
+        x1, y1 = pos[hop_from]
+        x2, y2 = pos[hop_to]
+        return x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+    if hop_to in pos:
+        return pos[hop_to]
+    if hop_from in pos:
+        return pos[hop_from]
+    return 0.5, 0.5
+
+
 def _packet_xy(pkt: PacketAnim, pos: dict) -> tuple[float, float]:
     if pkt.hop_t < 1.0 and pkt.hop_from in pos and pkt.hop_to in pos:
-        t = _smoothstep(pkt.hop_t)
-        x1, y1 = pos[pkt.hop_from]
-        x2, y2 = pos[pkt.hop_to]
-        return x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+        return _hop_xy(pkt.hop_from, pkt.hop_to, pkt.hop_t, pos)
     if pkt.route.delivered and pkt.route.destination in pos:
         return pos[pkt.route.destination]
     if pkt.route.current_node in pos:
@@ -283,6 +301,7 @@ def render_multi():
     irl_mode = not args.static
     speed = max(0.02, min(2.0, args.speed))
     hop_frames = max(6, round(args.hop_ms * args.fps / 1000 / speed))
+    rcb_hop_frames = max(3, hop_frames // 8)
     frame_mobility = args.mobility * speed / args.fps if irl_mode else 0.0
     area_km = max(0.05, args.area_km)
     scale_m = area_km * 1000.0
@@ -326,6 +345,7 @@ def render_multi():
     last_delivery_s: float | None = None
     failed_runs = 0
     rcb_state: RcbBroadcast | None = None
+    rcb_physics_tick = 0
 
     margin_m = scale_m * 0.05
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -349,6 +369,7 @@ def render_multi():
     edge_tracker = EdgeTracker()
     node_scatter = None
     packet_scatter = None
+    rcb_packet_scatter = None
     trail_line = None
     repeater_scatter = None
     station_scatter = None
@@ -381,11 +402,11 @@ def render_multi():
                 return greedy_to(env.G, neighbors, route.destination, env.max_hops)
         return action
 
-    def _rcb_build_wave():
-        """Fala kaskadowa: tylko wave_front przekazuje do bezpośrednich sąsiadów."""
+    def _rcb_launch_wave() -> bool:
+        """Jedna fala — wszystkie przekazy z wave_front startują naraz."""
         if rcb_state is None:
-            return
-        rcb_state.hop_queue.clear()
+            return False
+        rcb_state.active_hops.clear()
         rcb_state.wave_scheduled.clear()
         for src in sorted(rcb_state.wave_front):
             if src not in rcb_state.received:
@@ -393,22 +414,36 @@ def render_multi():
             for n in env.G.neighbors(src):
                 if n in rcb_state.received or n in rcb_state.wave_scheduled:
                     continue
-                rcb_state.hop_queue.append((src, n))
+                if not env.G.has_edge(src, n):
+                    continue
+                rcb_state.active_hops.append(RcbHop(hop_from=src, hop_to=n, hop_t=0.0))
                 rcb_state.wave_scheduled.add(n)
+        return bool(rcb_state.active_hops)
 
     def _rcb_advance_wave() -> bool:
-        """Po zakończeniu fali — nadawcami stają się węzły, które właśnie odebrały alert."""
+        """Następna warstwa kaskady — nadawcami są węzły z poprzedniej fali."""
         if rcb_state is None:
             return False
-        pending = rcb_state.wave_scheduled - rcb_state.received
-        if pending:
+        delivered = set(rcb_state.wave_scheduled) & rcb_state.received
+        if not delivered:
             return False
-        if not rcb_state.wave_scheduled:
-            return False
-        rcb_state.wave_front = set(rcb_state.wave_scheduled)
+        rcb_state.wave_front = delivered
         rcb_state.wave_num += 1
-        _rcb_build_wave()
-        return bool(rcb_state.hop_queue)
+        return _rcb_launch_wave()
+
+    def _rcb_hops_in_flight() -> bool:
+        return bool(rcb_state and any(h.hop_t < 1.0 for h in rcb_state.active_hops))
+
+    def _rcb_try_finish():
+        nonlocal runs_completed, simulation_done, last_delivery_s
+        if rcb_state is None or rcb_state.counted:
+            return
+        route.delivered = True
+        last_delivery_s = run_transport_s
+        runs_completed += 1
+        rcb_state.counted = True
+        if runs_completed >= max_runs:
+            simulation_done = True
 
     def _setup_rcb_run():
         nonlocal rcb_state, endpoints, pending_hop_to, run_transport_s
@@ -423,7 +458,7 @@ def render_multi():
             wave_front={station},
             wave_num=1,
         )
-        _rcb_build_wave()
+        _rcb_launch_wave()
         pending_hop_to = None
         run_transport_s = 0.0
         endpoints = {station}
@@ -516,97 +551,56 @@ def render_multi():
         nonlocal run_transport_s
         if not irl_mode or simulation_done:
             return
-        if rcb_state is not None or route.active or _is_hopping():
+        if rcb_state is not None or route.active or _is_hopping() or _rcb_hops_in_flight():
             run_transport_s += ms_per_frame
 
     def _step_rcb():
         nonlocal runs_completed, finish_hold, simulation_done, pending_hop_to, last_delivery_s
+        nonlocal rcb_physics_tick
 
-        if not route.delivered or _is_hopping():
-            env.tick_physics()
+        if irl_mode:
+            rcb_physics_tick += 1
+            if rcb_physics_tick >= RCB_PHYSICS_EVERY:
+                env.tick_physics()
+                rcb_physics_tick = 0
         _tick_transport_clock()
 
-        if _is_hopping():
-            if (
-                irl_mode
-                and pending_hop_to is not None
-                and not env.hop_edge_ok(route, packet.hop_from, packet.hop_to)
-            ):
-                to_n = pending_hop_to
-                rcb_state.hop_queue.insert(0, (packet.hop_from, to_n))
-                packet.hop_t = 1.0
-                packet.hop_to = packet.hop_from
-                pending_hop_to = None
-                sync_artists()
-                return
-
-            prev_t = packet.hop_t
-            packet.hop_t = min(1.0, packet.hop_t + 1.0 / hop_frames)
-            if prev_t < 1.0 <= packet.hop_t and pending_hop_to is not None:
-                to_n = pending_hop_to
-                rcb_state.received.add(to_n)
-                if to_n not in route.path:
-                    route.path.append(to_n)
-                pending_hop_to = None
+        if _rcb_hops_in_flight():
+            still_active: list[RcbHop] = []
+            for hop in rcb_state.active_hops:
+                if (
+                    irl_mode
+                    and hop.hop_t < 1.0
+                    and not env.G.has_edge(hop.hop_from, hop.hop_to)
+                ):
+                    hop.hop_t = 0.0
+                prev = hop.hop_t
+                hop.hop_t = min(1.0, hop.hop_t + 1.0 / rcb_hop_frames)
+                if prev < 1.0 <= hop.hop_t:
+                    rcb_state.received.add(hop.hop_to)
+                if hop.hop_t < 1.0:
+                    still_active.append(hop)
+            rcb_state.active_hops = still_active
             sync_artists()
             return
 
         if (
             rcb_state
             and len(rcb_state.received) >= len(rcb_state.target_nodes)
-            and not rcb_state.hop_queue
         ):
             if not route.delivered:
-                route.delivered = True
-                last_delivery_s = run_transport_s
-                runs_completed += 1
-                rcb_state.counted = True
-                if runs_completed >= max_runs:
-                    simulation_done = True
+                _rcb_try_finish()
             sync_artists()
             return
 
-        if rcb_state and rcb_state.hop_queue:
-            while rcb_state.hop_queue:
-                from_n, to_n = rcb_state.hop_queue.pop(0)
-                if to_n in rcb_state.received:
-                    continue
-                if env.G.has_edge(from_n, to_n):
-                    packet.hop_from = from_n
-                    packet.hop_to = to_n
-                    packet.hop_t = 0.0
-                    pending_hop_to = to_n
-                    break
-                rcb_state.hop_queue.append((from_n, to_n))
-                break
-        elif rcb_state and not _is_hopping():
-            if rcb_state.wave_scheduled and rcb_state.wave_scheduled <= rcb_state.received:
-                if _rcb_advance_wave():
-                    pass
-                elif len(rcb_state.received) >= len(rcb_state.target_nodes):
-                    route.delivered = True
-                    last_delivery_s = run_transport_s
-                    if not rcb_state.counted:
-                        runs_completed += 1
-                        rcb_state.counted = True
-                    if runs_completed >= max_runs:
-                        simulation_done = True
-                else:
-                    route.delivered = True
-                    last_delivery_s = run_transport_s
-                    if not rcb_state.counted:
-                        runs_completed += 1
-                        rcb_state.counted = True
-                    if runs_completed >= max_runs:
-                        simulation_done = True
-            elif not rcb_state.wave_scheduled:
-                route.delivered = True
-                last_delivery_s = run_transport_s
-                if not rcb_state.counted:
-                    runs_completed += 1
-                    rcb_state.counted = True
-                if runs_completed >= max_runs:
-                    simulation_done = True
+        if rcb_state and rcb_state.wave_scheduled:
+            advanced = _rcb_advance_wave()
+            if advanced and not rcb_state.active_hops:
+                _rcb_advance_wave()
+            if not rcb_state.active_hops and not advanced:
+                _rcb_try_finish()
+        elif rcb_state:
+            _rcb_try_finish()
 
         sync_artists()
 
@@ -670,12 +664,15 @@ def render_multi():
         sync_artists()
 
     def _clear_artists():
-        nonlocal node_scatter, packet_scatter, trail_line, repeater_scatter
+        nonlocal node_scatter, packet_scatter, rcb_packet_scatter, trail_line, repeater_scatter
         nonlocal station_scatter, station_label, wave_circle
         edge_tracker.clear()
         if packet_scatter is not None:
             packet_scatter.remove()
             packet_scatter = None
+        if rcb_packet_scatter is not None:
+            rcb_packet_scatter.remove()
+            rcb_packet_scatter = None
         if trail_line is not None:
             trail_line.remove()
             trail_line = None
@@ -701,7 +698,7 @@ def render_multi():
         return f"{x_m:.0f} m, {y_m:.0f} m"
 
     def sync_artists():
-        nonlocal node_scatter, packet_scatter, trail_line, repeater_scatter
+        nonlocal node_scatter, packet_scatter, rcb_packet_scatter, trail_line, repeater_scatter
         nonlocal station_scatter, station_label, wave_circle
         pos_norm = nx.get_node_attributes(env.G, "pos")
         pos = _norm_to_world(pos_norm, scale_m)
@@ -742,7 +739,7 @@ def render_multi():
             node_scatter.set_sizes(sizes)
 
         tx, ty = _trail_points(route, packet, pos)
-        if tx:
+        if tx and not route.is_rcb_broadcast:
             if trail_line is None:
                 (trail_line,) = ax.plot(
                     tx, ty, color=route.color, alpha=0.45, linewidth=2, zorder=2
@@ -752,18 +749,40 @@ def render_multi():
         elif trail_line is not None:
             trail_line.set_data([], [])
 
-        px, py = _packet_xy(packet, pos)
-        pkt_size = 220 if (route.is_emergency or route.is_rcb_broadcast) else 180
-        if packet_scatter is None:
-            packet_scatter = ax.scatter(
-                [px], [py], s=pkt_size, c=route.color,
-                edgecolors="#fff", linewidths=1.4 if route.is_emergency else 1.2,
-                zorder=5,
-            )
+        if route.is_rcb_broadcast and rcb_state is not None and rcb_state.active_hops:
+            rpx, rpy = [], []
+            for hop in rcb_state.active_hops:
+                if hop.hop_t < 1.0:
+                    x, y = _hop_xy(hop.hop_from, hop.hop_to, hop.hop_t, pos)
+                    rpx.append(x)
+                    rpy.append(y)
+            if rpx:
+                if rcb_packet_scatter is None:
+                    rcb_packet_scatter = ax.scatter(
+                        rpx, rpy, s=160, c=route.color,
+                        edgecolors="#fff", linewidths=1.2, zorder=5,
+                    )
+                else:
+                    rcb_packet_scatter.set_offsets(np.column_stack([rpx, rpy]))
+            elif rcb_packet_scatter is not None:
+                rcb_packet_scatter.set_offsets(np.empty((0, 2)))
+            if packet_scatter is not None:
+                packet_scatter.set_offsets(np.empty((0, 2)))
         else:
-            packet_scatter.set_offsets(np.array([[px, py]]))
-            packet_scatter.set_facecolors([route.color])
-            packet_scatter.set_sizes([pkt_size])
+            if rcb_packet_scatter is not None:
+                rcb_packet_scatter.set_offsets(np.empty((0, 2)))
+            px, py = _packet_xy(packet, pos)
+            pkt_size = 220 if route.is_emergency else 180
+            if packet_scatter is None:
+                packet_scatter = ax.scatter(
+                    [px], [py], s=pkt_size, c=route.color,
+                    edgecolors="#fff", linewidths=1.4 if route.is_emergency else 1.2,
+                    zorder=5,
+                )
+            else:
+                packet_scatter.set_offsets(np.array([[px, py]]))
+                packet_scatter.set_facecolors([route.color])
+                packet_scatter.set_sizes([pkt_size])
 
         station_node = None
         if route.is_rcb_broadcast and route.source in pos:
@@ -837,11 +856,12 @@ def render_multi():
                     f"fala {rcb_state.wave_num} · "
                     f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
                 )
-            elif _is_hopping():
+            elif _is_hopping() or _rcb_hops_in_flight():
                 st = "~~~"
                 phase = (
                     f"kaskada fala {rcb_state.wave_num} · "
-                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)}"
+                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)} · "
+                    f"{len(rcb_state.active_hops)} równolegle"
                 )
             else:
                 st = "~~~"
@@ -925,9 +945,12 @@ def render_multi():
         writer = FFMpegWriter(fps=args.fps, metadata={"artist": "greenhack-mesh"})
         try:
             with writer.saving(fig, args.output, dpi=args.dpi):
-                for i in range(args.frames):
+                i = 0
+                cap = max(args.frames, 8000 * max_runs)
+                while i < cap:
                     step(i)
                     writer.grab_frame()
+                    i += 1
                     if simulation_done:
                         finish_hold += 1
                         if finish_hold >= FINISH_HOLD_FRAMES:

@@ -160,9 +160,23 @@ class MultiMeshEnv:
         self._rebuild_edges()
         self.spread_all_gossip()
 
+    def _pin_station(self, station: int):
+        pos = nx.get_node_attributes(self.G, "pos")
+        if station in pos:
+            self.G.nodes[station]["pos_pin"] = tuple(pos[station])
+        self.G.nodes[station]["mobility"] = 0.0
+        self.G.nodes[station]["is_112"] = True
+        self.velocities[station] = (0.0, 0.0)
+
     def _move_nodes(self):
         pos = nx.get_node_attributes(self.G, "pos")
         for n in self.G.nodes:
+            if self.G.nodes[n].get("is_112"):
+                pin = self.G.nodes[n].get("pos_pin")
+                if pin is not None:
+                    pos[n] = pin
+                self.velocities[n] = (0.0, 0.0)
+                continue
             mob = self.G.nodes[n]["mobility"]
             vx, vy = self.velocities.get(n, (0.3, 0.0))
             x, y = pos[n]
@@ -456,7 +470,7 @@ class MultiMeshEnv:
             self.G.nodes[station]["mobility"] = 0.0
             self.G.nodes[station]["is_112"] = True
             self.velocities[station] = (0.0, 0.0)
-
+            self._pin_station(station)
             self._ensure_gossip_for_dest(station)
             for _ in range(self.gossip_warmup_steps):
                 self.spread_all_gossip()
@@ -467,6 +481,7 @@ class MultiMeshEnv:
         for n in self.G.nodes:
             if self.G.nodes[n].get("is_112"):
                 self.G.nodes[n]["is_112"] = False
+                self.G.nodes[n].pop("pos_pin", None)
                 self.G.nodes[n]["mobility"] = float(np.random.uniform(0.0, 1.0))
 
     def setup_rcb_broadcast(self, route: Route, rng) -> bool:
@@ -491,6 +506,7 @@ class MultiMeshEnv:
         self.G.nodes[station]["mobility"] = 0.0
         self.G.nodes[station]["is_112"] = True
         self.velocities[station] = (0.0, 0.0)
+        self._pin_station(station)
         return True
 
     def reroll_route_endpoints(self, route: Route, rng) -> bool:
