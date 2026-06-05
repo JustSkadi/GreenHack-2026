@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# native (generowane przez prebuild — nie commituj)
+android/
+ios/
+
+# env — nigdy nie commituj kluczy
+.env
+.env.local
+.env.*.local
+
+# editor
+.vscode/
+.idea/
+
+# system
+.DS_Store
+Thumbs.db
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# signing keys
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem

@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Nexus",
+    "slug": "nexus",
+    "version": "1.0.0",
+    "scheme": "nexus",
+    "orientation": "portrait",
+    "backgroundColor": "#0c0c0c",
+    "platforms": ["ios", "android"],
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0c0c0c"
+      },
+      "package": "com.nexus.crisis"
+    },
+    "ios": {
+      "bundleIdentifier": "com.nexus.crisis"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}
