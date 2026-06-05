@@ -6,4 +6,5 @@ mobility_step: 0.015
 node_drop_prob: 0.003
 max_store_steps: 3
 max_reconnect_attempts: 3
+max_tx_retries: 8
 gossip_warmup_steps: 12

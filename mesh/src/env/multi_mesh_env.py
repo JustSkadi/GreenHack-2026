@@ -21,6 +21,8 @@ class Route:
     store_steps: int = 0
     reconnect_attempts: int = 0
     repeater_sites: list = field(default_factory=list)
+    tx_retries: int = 0
+    tx_aborts: int = 0
 
     @property
     def active(self) -> bool:
@@ -50,6 +52,7 @@ class MultiMeshEnv:
         node_drop_prob=0.0,
         max_store_steps=3,
         max_reconnect_attempts=3,
+        max_tx_retries=8,
         gossip_warmup_steps=12,
     ):
         self.num_nodes = num_nodes
@@ -61,6 +64,7 @@ class MultiMeshEnv:
         self.node_drop_prob = node_drop_prob
         self.max_store_steps = max_store_steps
         self.max_reconnect_attempts = max_reconnect_attempts
+        self.max_tx_retries = max_tx_retries
         self.gossip_warmup_steps = gossip_warmup_steps
         self.routes: list[Route] = []
         self.gossip_by_dest: dict[int, dict[int, int]] = {}
@@ -111,10 +115,18 @@ class MultiMeshEnv:
             )
 
         self.topology_events = 0
+        self._init_velocities()
         self._init_all_gossip()
         for _ in range(self.gossip_warmup_steps):
             self.spread_all_gossip()
         return self.routes
+
+    def _init_velocities(self):
+        self.velocities = {}
+        for n in self.G.nodes:
+            angle = np.random.uniform(0, 2 * np.pi)
+            speed = np.random.uniform(0.5, 1.0) * self.G.nodes[n]["mobility"]
+            self.velocities[n] = (float(np.cos(angle) * speed), float(np.sin(angle) * speed))
 
     def _init_all_gossip(self):
         self.gossip_by_dest = {}
@@ -148,10 +160,40 @@ class MultiMeshEnv:
         pos = nx.get_node_attributes(self.G, "pos")
         for n in self.G.nodes:
             mob = self.G.nodes[n]["mobility"]
+            vx, vy = self.velocities.get(n, (0.3, 0.0))
             x, y = pos[n]
-            dx = (np.random.random() - 0.5) * mob * self.mobility_step
-            dy = (np.random.random() - 0.5) * mob * self.mobility_step
-            pos[n] = (float(np.clip(x + dx, 0, 1)), float(np.clip(y + dy, 0, 1)))
+            step = self.mobility_step * mob
+
+            x += vx * step
+            y += vy * step
+
+            if x <= 0.0:
+                x = 0.0
+                vx = abs(vx) * 0.92
+            elif x >= 1.0:
+                x = 1.0
+                vx = -abs(vx) * 0.92
+            if y <= 0.0:
+                y = 0.0
+                vy = abs(vy) * 0.92
+            elif y >= 1.0:
+                y = 1.0
+                vy = -abs(vy) * 0.92
+
+            # delikatna zmiana kierunku — momentum, nie losowy skok
+            vx += (np.random.random() - 0.5) * 0.03 * mob
+            vy += (np.random.random() - 0.5) * 0.03 * mob
+
+            speed = float(np.hypot(vx, vy))
+            max_speed = 0.75
+            if speed > max_speed:
+                vx, vy = vx / speed * max_speed, vy / speed * max_speed
+            elif speed < 0.10:
+                angle = np.random.uniform(0, 2 * np.pi)
+                vx, vy = float(np.cos(angle) * 0.22), float(np.sin(angle) * 0.22)
+
+            pos[n] = (float(x), float(y))
+            self.velocities[n] = (float(vx), float(vy))
         nx.set_node_attributes(self.G, pos, "pos")
 
     def _rebuild_edges(self):
@@ -295,18 +337,20 @@ class MultiMeshEnv:
 
         return not list(self.G.neighbors(cur))
 
-    def step_route(self, route: Route, action_idx: int, neighbors: list[int]) -> bool:
-        """Jeden hop trasy. Zwraca True gdy trasa zakończona."""
+    def hop_edge_ok(self, route: Route, from_node: int, to_node: int) -> bool:
+        if from_node not in self.G or to_node not in self.G:
+            return False
+        return self.G.has_edge(from_node, to_node)
+
+    def commit_hop(self, route: Route, next_node: int) -> bool:
+        """Zatwierdza hop po zakończeniu transmisji (animacja / RTT)."""
         if not route.active:
             return True
 
-        if action_idx >= len(neighbors):
-            return self._handle_disconnect(route)
+        if self.irl_mode and not self.hop_edge_ok(route, route.current_node, next_node):
+            return self.abort_inflight_hop(route)
 
-        next_node = neighbors[action_idx]
-        if self.irl_mode and not self.G.has_edge(route.current_node, next_node):
-            return self._handle_disconnect(route)
-
+        route.tx_retries = 0
         route.hops += 1
         route.current_node = next_node
         route.path.append(next_node)
@@ -326,6 +370,59 @@ class MultiMeshEnv:
         if not list(self.G.neighbors(route.current_node)):
             return self._handle_disconnect(route)
 
+        return False
+
+    def abort_inflight_hop(self, route: Route) -> bool:
+        """Zerwana krawędź w trakcie hopu — rollback i ponowna próba."""
+        route.tx_aborts += 1
+        route.tx_retries += 1
+
+        if route.tx_retries >= self.max_tx_retries:
+            self._mark_impossible(route)
+            return True
+
+        return self._handle_disconnect(route)
+
+    def step_route(self, route: Route, action_idx: int, neighbors: list[int]) -> bool:
+        """Natychmiastowy hop (trening / testy bez animacji)."""
+        if not route.active:
+            return True
+
+        if action_idx >= len(neighbors):
+            return self._handle_disconnect(route)
+
+        next_node = neighbors[action_idx]
+        if self.irl_mode and not self.hop_edge_ok(route, route.current_node, next_node):
+            return self._handle_disconnect(route)
+
+        return self.commit_hop(route, next_node)
+
+    def reset_route(self, route: Route):
+        """Reset trasy na kolejny przebieg (ta sama para węzłów)."""
+        route.current_node = route.source
+        route.path = [route.source]
+        route.hops = 0
+        route.delivered = False
+        route.impossible = False
+        route.store_steps = 0
+        route.reconnect_attempts = 0
+        route.repeater_sites = []
+        route.tx_retries = 0
+        route.tx_aborts = 0
+
+    def reroll_route_endpoints(self, route: Route, rng) -> bool:
+        """Nowa para start/cel na aktualnym grafie — węzły dalej się ruszają."""
+        nodes = list(self.G.nodes)
+        if len(nodes) < 2:
+            return False
+        for _ in range(300):
+            src, dst = rng.sample(nodes, 2)
+            if src != dst and nx.has_path(self.G, src, dst):
+                route.source = src
+                route.destination = dst
+                route.label = f"{src}→{dst}"
+                self.reset_route(route)
+                return True
         return False
 
     def endpoint_nodes(self) -> set[int]:
