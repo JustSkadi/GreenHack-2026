@@ -12,6 +12,8 @@ dependencies = [
     "onnx",
     "onnxscript>=0.7.0",
     "matplotlib>=3.10.9",
+    "imageio>=2.37.3",
+    "imageio-ffmpeg>=0.6.0",
 ]
 
 [tool.uv]

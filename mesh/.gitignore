@@ -4,3 +4,4 @@ outputs/
 __pycache__/
 *.pt
 *.onnx
+*.mp4
