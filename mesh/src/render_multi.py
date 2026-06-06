@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 import matplotlib.animation as animation
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 import networkx as nx
 import numpy as np
@@ -36,8 +35,10 @@ EDGE_GHOST = "#ef4444"
 NEW_EDGE_FRAMES = 12
 GHOST_FRAMES = 12
 FINISH_HOLD_FRAMES = 4
-STATION_112_SIZE = 1500
+STATION_NODE_SIZE = 140  # 2× zwykła kulka (70)
+STATION_COLOR = "#f59e0b"  # stacja RCB — widoczna na ciemnym tle
 RCB_BROADCAST_RUN_INDEX = 1
+RCB_PHASE_SLOW = 5  # faza 2: 5× wolniejsza animacja
 RCB_MESSAGE = (
     "RCB: Awaryjne ostrzeżenie — zagrożenie powodziowe w regionie. "
     "Evakuuj się na wyżyny. Unikaj wód i niżów. Strefa: obszar mesh."
@@ -149,6 +150,7 @@ class EdgeTracker:
         for ghost in self.ghosts:
             ghost.line.remove()
         self.ghosts.clear()
+        self.bootstrapped = False
 
 
 def _parse_routes(spec: str) -> list[tuple[str, int, int]]:
@@ -177,26 +179,44 @@ class PacketAnim:
     hop_t: float = 1.0
 
 
+def _last_delivered_node(route: Route) -> int:
+    return route.path[-1] if route.path else route.current_node
+
+
+def _anchor_packet(route: Route, pkt: PacketAnim) -> None:
+    """Pakiet na ostatnim zatwierdzonym węźle — po zerwanej transakcji hopu."""
+    node = _last_delivered_node(route)
+    pkt.hop_from = node
+    pkt.hop_to = node
+    pkt.hop_t = 1.0
+
+
 def _hop_xy(hop_from: int, hop_to: int, hop_t: float, pos: dict) -> tuple[float, float]:
     if hop_t < 1.0 and hop_from in pos and hop_to in pos:
         t = _smoothstep(hop_t)
         x1, y1 = pos[hop_from]
         x2, y2 = pos[hop_to]
         return x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
-    if hop_to in pos:
-        return pos[hop_to]
     if hop_from in pos:
         return pos[hop_from]
+    if hop_to in pos:
+        return pos[hop_to]
     return 0.5, 0.5
 
 
 def _packet_xy(pkt: PacketAnim, pos: dict) -> tuple[float, float]:
-    if pkt.hop_t < 1.0 and pkt.hop_from in pos and pkt.hop_to in pos:
+    if (
+        pkt.hop_t < 1.0
+        and pkt.hop_from != pkt.hop_to
+        and pkt.hop_from in pos
+        and pkt.hop_to in pos
+    ):
         return _hop_xy(pkt.hop_from, pkt.hop_to, pkt.hop_t, pos)
     if pkt.route.delivered and pkt.route.destination in pos:
         return pos[pkt.route.destination]
-    if pkt.route.current_node in pos:
-        return pos[pkt.route.current_node]
+    anchor = _last_delivered_node(pkt.route)
+    if anchor in pos:
+        return pos[anchor]
     return 0.5, 0.5
 
 
@@ -232,6 +252,19 @@ def _format_duration(seconds: float) -> str:
         return f"{seconds / 60:.1f} min"
     if seconds >= 10:
         return f"{seconds:.1f} s"
+    return f"{seconds:.2f} s"
+
+
+def _format_sim_time(seconds: float) -> str:
+    if seconds >= 3600:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = seconds % 60
+        return f"{h}:{m:02d}:{s:05.2f}"
+    if seconds >= 60:
+        m = int(seconds // 60)
+        s = seconds % 60
+        return f"{m}:{s:05.2f}"
     return f"{seconds:.2f} s"
 
 
@@ -281,6 +314,12 @@ def render_multi():
     )
     parser.add_argument("--seed", type=int, default=42, help="Seed dla powtarzalności")
     parser.add_argument(
+        "--nodes",
+        type=int,
+        default=100,
+        help="Liczba węzłów w grafie (domyślnie 2× więcej niż trening)",
+    )
+    parser.add_argument(
         "--output", "-o",
         type=str,
         default=None,
@@ -299,7 +338,7 @@ def render_multi():
     irl_mode = not args.static
     speed = max(0.02, min(2.0, args.speed))
     hop_frames = max(6, round(args.hop_ms * args.fps / 1000 / speed))
-    rcb_hop_frames = max(3, hop_frames // 8)
+    rcb_hop_frames = max(15, (hop_frames // 8) * RCB_PHASE_SLOW)
     frame_mobility = args.mobility * speed / args.fps if irl_mode else 0.0
     area_km = max(0.05, args.area_km)
     scale_m = area_km * 1000.0
@@ -317,6 +356,7 @@ def render_multi():
         net.eval()
 
     env = MultiMeshEnv(
+        num_nodes=max(10, args.nodes),
         irl_mode=irl_mode,
         mobility_step=frame_mobility,
         max_reconnect_attempts=6,
@@ -343,6 +383,7 @@ def render_multi():
     last_delivery_s: float | None = None
     failed_runs = 0
     rcb_state: RcbBroadcast | None = None
+    irl_time_s = 0.0
 
     margin_m = scale_m * 0.05
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -369,19 +410,8 @@ def render_multi():
     rcb_packet_scatter = None
     trail_line = None
     repeater_scatter = None
-    station_scatter = None
-    station_label = None
-    wave_circle = None
-    title = ax.set_title("", color="#e5e7eb", fontsize=11, pad=10)
-    hud_text = ax.text(
-        0.98, 0.02, "",
-        transform=ax.transAxes,
-        ha="right", va="bottom",
-        color="#e5e7eb", fontsize=9,
-        family="monospace",
-        bbox=dict(boxstyle="round,pad=0.35", facecolor="#161b22", edgecolor="#374151", alpha=0.92),
-        zorder=10,
-    )
+    station_overlay = None
+    title = ax.set_title("", color="#e5e7eb", fontsize=13, pad=12, loc="center")
     endpoints = env.endpoint_nodes()
 
     def pick_action(state, neighbors):
@@ -443,7 +473,8 @@ def render_multi():
             simulation_done = True
 
     def _setup_rcb_run():
-        nonlocal rcb_state, endpoints, pending_hop_to, run_transport_s
+        nonlocal rcb_state, endpoints, pending_hop_to, run_transport_s, irl_time_s
+        edge_tracker.clear()
         env.setup_rcb_broadcast(route, random)
         station = route.source
         component = nx.node_connected_component(env.G, station)
@@ -458,6 +489,7 @@ def render_multi():
         _rcb_launch_wave()
         pending_hop_to = None
         run_transport_s = 0.0
+        irl_time_s = 0.0
         endpoints = {station}
         packet.hop_from = station
         packet.hop_to = station
@@ -504,10 +536,9 @@ def render_multi():
 
     def abort_inflight():
         nonlocal pending_hop_to
-        packet.hop_t = 1.0
-        packet.hop_to = packet.hop_from
         pending_hop_to = None
         env.abort_inflight_hop(route)
+        _anchor_packet(route, packet)
 
     def route_packet():
         nonlocal pending_hop_to
@@ -537,17 +568,26 @@ def render_multi():
     def _delivery_hop_just_finished(prev_t: float) -> bool:
         return route.delivered and prev_t < 1.0 <= packet.hop_t
 
-    def _tick_transport_clock():
-        nonlocal run_transport_s
+    def _tick_irl_clock():
+        nonlocal run_transport_s, irl_time_s
         if not irl_mode or simulation_done:
             return
         if rcb_state is not None or route.active or _is_hopping() or _rcb_hops_in_flight():
-            run_transport_s += ms_per_frame
+            dt = ms_per_frame
+            if rcb_state is not None:
+                dt = ms_per_frame / RCB_PHASE_SLOW
+            run_transport_s += dt
+            irl_time_s += dt
 
     def _step_rcb():
         nonlocal runs_completed, finish_hold, simulation_done, pending_hop_to, last_delivery_s
 
-        _tick_transport_clock()
+        _tick_irl_clock()
+        if not route.delivered:
+            saved_mobility = env.mobility_step
+            env.mobility_step = frame_mobility / RCB_PHASE_SLOW
+            env.tick_physics()
+            env.mobility_step = saved_mobility
 
         if _rcb_hops_in_flight():
             still_active: list[RcbHop] = []
@@ -604,7 +644,7 @@ def render_multi():
         if not route.delivered or _is_hopping():
             env.tick_physics()
 
-        _tick_transport_clock()
+        _tick_irl_clock()
 
         if _is_hopping():
             if (
@@ -620,8 +660,13 @@ def render_multi():
             packet.hop_t = min(1.0, packet.hop_t + 1.0 / hop_frames)
 
             if prev_t < 1.0 <= packet.hop_t and pending_hop_to is not None:
-                env.commit_hop(route, pending_hop_to)
+                to_node = pending_hop_to
                 pending_hop_to = None
+                if irl_mode and not env.hop_edge_ok(route, route.current_node, to_node):
+                    env.abort_inflight_hop(route)
+                else:
+                    env.commit_hop(route, to_node)
+                _anchor_packet(route, packet)
 
             if _delivery_hop_just_finished(prev_t):
                 last_delivery_s = run_transport_s
@@ -643,7 +688,7 @@ def render_multi():
 
     def _clear_artists():
         nonlocal node_scatter, packet_scatter, rcb_packet_scatter, trail_line, repeater_scatter
-        nonlocal station_scatter, station_label, wave_circle
+        nonlocal station_overlay
         edge_tracker.clear()
         if packet_scatter is not None:
             packet_scatter.remove()
@@ -660,24 +705,13 @@ def render_multi():
         if repeater_scatter is not None:
             repeater_scatter.remove()
             repeater_scatter = None
-        if station_scatter is not None:
-            station_scatter.remove()
-            station_scatter = None
-        if station_label is not None:
-            station_label.remove()
-            station_label = None
-        if wave_circle is not None:
-            wave_circle.remove()
-            wave_circle = None
-
-    def _format_coords(x_m: float, y_m: float) -> str:
-        if use_km_ticks:
-            return f"{x_m / 1000:.3f} km, {y_m / 1000:.3f} km"
-        return f"{x_m:.0f} m, {y_m:.0f} m"
+        if station_overlay is not None:
+            station_overlay.remove()
+            station_overlay = None
 
     def sync_artists():
         nonlocal node_scatter, packet_scatter, rcb_packet_scatter, trail_line, repeater_scatter
-        nonlocal station_scatter, station_label, wave_circle
+        nonlocal station_overlay
         pos_norm = nx.get_node_attributes(env.G, "pos")
         pos = _norm_to_world(pos_norm, scale_m)
         edge_tracker.sync(ax, env.G, pos)
@@ -691,8 +725,8 @@ def render_multi():
             xs.append(pos[n][0])
             ys.append(pos[n][1])
             if is_station:
-                sizes.append(50)
-                colors.append("#1f2937")
+                sizes.append(STATION_NODE_SIZE)
+                colors.append(STATION_COLOR)
             elif got_rcb:
                 sizes.append(100)
                 colors.append("#fbbf24")
@@ -715,6 +749,25 @@ def render_multi():
             node_scatter.set_offsets(np.column_stack([xs, ys]))
             node_scatter.set_facecolors(colors)
             node_scatter.set_sizes(sizes)
+
+        station_node = None
+        if route.is_rcb_broadcast and rcb_state is not None:
+            for n in env.G.nodes:
+                if env.G.nodes[n].get("is_112") and n in pos:
+                    station_node = n
+                    break
+        if station_node is not None:
+            sx, sy = pos[station_node]
+            if station_overlay is None:
+                station_overlay = ax.scatter(
+                    [sx], [sy], s=STATION_NODE_SIZE, c=STATION_COLOR,
+                    zorder=7, edgecolors="#ffffff", linewidths=1.4,
+                )
+            else:
+                station_overlay.set_offsets(np.array([[sx, sy]]))
+        elif station_overlay is not None:
+            station_overlay.remove()
+            station_overlay = None
 
         tx, ty = _trail_points(route, packet, pos)
         if tx and not route.is_rcb_broadcast:
@@ -761,54 +814,6 @@ def render_multi():
                 packet_scatter.set_facecolors([route.color])
                 packet_scatter.set_sizes([pkt_size])
 
-        station_node = route.source if route.is_rcb_broadcast and route.source in pos else None
-
-        if station_node is not None:
-            sx, sy = pos[station_node]
-            if station_scatter is None:
-                station_scatter = ax.scatter(
-                    [sx], [sy], s=STATION_112_SIZE, c="#dc2626",
-                    edgecolors="#ffffff", linewidths=2.8, zorder=4, alpha=0.93,
-                )
-                station_label = ax.text(
-                    sx, sy, "112",
-                    ha="center", va="center",
-                    color="#ffffff", fontsize=15, fontweight="bold", zorder=5,
-                )
-            else:
-                station_scatter.set_offsets(np.array([[sx, sy]]))
-                station_label.set_position((sx, sy))
-        elif station_scatter is not None:
-            station_scatter.remove()
-            station_scatter = None
-            station_label.remove()
-            station_label = None
-
-        if rcb_state is not None and route.source in pos:
-            sx, sy = pos[route.source]
-            if rcb_state.target_nodes:
-                dists = [
-                    float(np.hypot(pos[n][0] - sx, pos[n][1] - sy))
-                    for n in rcb_state.target_nodes if n in pos
-                ]
-                max_r = max(dists) if dists else scale_m * 0.25
-            else:
-                max_r = scale_m * 0.25
-            prog = rcb_state.wave_num / max(1, rcb_state.wave_num + 2)
-            radius = max_r * (0.08 + 0.92 * prog)
-            if wave_circle is None:
-                wave_circle = mpatches.Circle(
-                    (sx, sy), radius,
-                    fill=False, edgecolor="#fbbf24", linewidth=2.2, alpha=0.5, zorder=1,
-                )
-                ax.add_patch(wave_circle)
-            else:
-                wave_circle.center = (sx, sy)
-                wave_circle.set_radius(radius)
-        elif wave_circle is not None:
-            wave_circle.remove()
-            wave_circle = None
-
         if route.repeater_sites:
             rx = [s["pos"][0] * scale_m for s in route.repeater_sites]
             ry = [s["pos"][1] * scale_m for s in route.repeater_sites]
@@ -821,76 +826,7 @@ def render_multi():
         elif repeater_scatter is not None:
             repeater_scatter.set_offsets(np.empty((0, 2)))
 
-        mode = "IRL" if irl_mode else "static"
-        if route.is_rcb_broadcast and rcb_state is not None:
-            if route.delivered and not _is_hopping():
-                st = "OK"
-                phase = (
-                    f"fala {rcb_state.wave_num} · "
-                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)} story"
-                )
-            elif _is_hopping() or _rcb_hops_in_flight():
-                st = "~~~"
-                phase = (
-                    f"kaskada fala {rcb_state.wave_num} · "
-                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)} · "
-                    f"{len(rcb_state.active_hops)} równolegle"
-                )
-            else:
-                st = "~~~"
-                phase = (
-                    f"kaskada fala {rcb_state.wave_num} · "
-                    f"{len(rcb_state.received)}/{len(rcb_state.target_nodes)}"
-                )
-        elif route.delivered and not _is_hopping():
-            st = "✓"
-            phase = "dostarczono"
-        elif route.impossible:
-            st = "★"
-            phase = "impossible"
-        elif _is_hopping():
-            st = "↺" if route.tx_retries else "→"
-            phase = "routing"
-        else:
-            st = "…"
-            phase = "routing"
-        tx_info = f" | tx↺{route.tx_aborts}" if route.tx_aborts else ""
-        title.set_text(
-            f"{route.label}{st} | przebieg "
-            f"{min(runs_completed + (1 if route.active else 0), max_runs)}/{max_runs} | {phase}{tx_info} | {mode}"
-        )
-
-        if irl_mode:
-            dist_m = 0.0
-            if len(route.path) >= 2:
-                for a, b in zip(route.path[:-1], route.path[1:]):
-                    if a in pos and b in pos:
-                        ax_, ay_ = pos[a]
-                        bx_, by_ = pos[b]
-                        dist_m += float(np.hypot(bx_ - ax_, by_ - ay_))
-            if _is_hopping() and packet.hop_from in pos and packet.hop_to in pos:
-                px_h, py_h = _packet_xy(packet, pos)
-                fx, fy = pos[packet.hop_from]
-                dist_m += float(np.hypot(px_h - fx, py_h - fy))
-            if route.is_rcb_broadcast and rcb_state is not None:
-                hud_lines = [
-                    "ALERT RCB → story (Faza A · graf statyczny)",
-                    RCB_MESSAGE,
-                    f"fala {rcb_state.wave_num} · "
-                    f"odebrane: {len(rcb_state.received)}/{len(rcb_state.target_nodes)}",
-                    f"transport: {_format_duration(run_transport_s)}",
-                ]
-            else:
-                hud_lines = [
-                    f"transport: {_format_duration(run_transport_s)}",
-                    f"trasa: {_format_distance(dist_m)} · {route.hops} hop",
-                    f"radio ~{_format_distance(radio_range_m)}",
-                ]
-            if last_delivery_s is not None and (route.delivered or simulation_done):
-                hud_lines.append(f"poprz.: {_format_duration(last_delivery_s)}")
-            hud_text.set_text("\n".join(hud_lines))
-        else:
-            hud_text.set_text("")
+        title.set_text(_format_sim_time(irl_time_s))
 
     _clear_artists()
     sync_artists()

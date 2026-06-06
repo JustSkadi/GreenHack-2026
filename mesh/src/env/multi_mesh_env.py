@@ -97,6 +97,7 @@ class MultiMeshEnv:
                 self.G.nodes[i]["battery"] = float(np.random.uniform(0.2, 1.0))
                 self.G.nodes[i]["mobility"] = float(np.random.uniform(0.0, 1.0))
 
+            self._rebuild_edges()
             ok = True
             for _label, src, dst in route_specs:
                 if src == dst or not nx.has_path(self.G, src, dst):
@@ -223,12 +224,24 @@ class MultiMeshEnv:
         pos = nx.get_node_attributes(self.G, "pos")
         nodes = list(self.G.nodes)
         self.G.remove_edges_from(list(self.G.edges()))
+
+        candidates: list[tuple[float, int, int]] = []
         for i, a in enumerate(nodes):
             ax, ay = pos[a]
             for b in nodes[i + 1 :]:
                 bx, by = pos[b]
-                if (ax - bx) ** 2 + (ay - by) ** 2 <= self.radius**2:
-                    self.G.add_edge(a, b)
+                dist_sq = (ax - bx) ** 2 + (ay - by) ** 2
+                if dist_sq <= self.radius**2:
+                    candidates.append((dist_sq, a, b))
+
+        candidates.sort(key=lambda item: item[0])
+        degree = dict.fromkeys(nodes, 0)
+        for _dist_sq, a, b in candidates:
+            if degree[a] >= self.max_degree or degree[b] >= self.max_degree:
+                continue
+            self.G.add_edge(a, b)
+            degree[a] += 1
+            degree[b] += 1
 
     def can_reach(self, route: Route) -> bool:
         if route.destination not in self.G or route.current_node not in self.G:
@@ -492,6 +505,25 @@ class MultiMeshEnv:
         for n in self.G.nodes:
             self.G.nodes[n].pop("pos_frozen", None)
 
+    def rescatter_layout(self, rng) -> bool:
+        """Nowy losowy układ węzłów — ten sam graf, świeże pozycje i prędkości."""
+        self.clear_emergency_markers()
+        nodes = list(self.G.nodes)
+        if not nodes:
+            return False
+
+        for _ in range(80):
+            pos = {
+                n: (float(rng.uniform(0.05, 0.95)), float(rng.uniform(0.05, 0.95)))
+                for n in nodes
+            }
+            nx.set_node_attributes(self.G, pos, "pos")
+            self._rebuild_edges()
+            if nx.is_connected(self.G):
+                self._init_velocities()
+                return True
+        return False
+
     def clear_emergency_markers(self):
         for n in self.G.nodes:
             if self.G.nodes[n].get("is_112"):
@@ -501,12 +533,11 @@ class MultiMeshEnv:
         self.thaw_all_positions()
 
     def setup_rcb_broadcast(self, route: Route, rng) -> bool:
-        """Run 2: alert RCB — stacja 112 na środku, graf zamrożony."""
-        nodes = list(self.G.nodes)
-        if not nodes:
+        """Run 2: alert RCB — stacja 112 na środku, świeży rozrzut węzłów."""
+        if not self.rescatter_layout(rng):
             return False
 
-        self.clear_emergency_markers()
+        nodes = list(self.G.nodes)
         center = (0.5, 0.5)
         pos = nx.get_node_attributes(self.G, "pos")
         station = min(
@@ -528,8 +559,6 @@ class MultiMeshEnv:
         route.current_node = station
         route.path = [station]
 
-        self.freeze_all_positions()
-        self.G.nodes[station]["pos_frozen"] = center
         self.G.nodes[station]["pos_pin"] = center
         self.G.nodes[station]["mobility"] = 0.0
         self.G.nodes[station]["is_112"] = True

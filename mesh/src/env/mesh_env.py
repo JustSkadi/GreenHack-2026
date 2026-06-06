@@ -172,13 +172,24 @@ class MeshEnv:
         pos = nx.get_node_attributes(self.G, "pos")
         nodes = list(self.G.nodes)
         self.G.remove_edges_from(list(self.G.edges()))
+
+        candidates: list[tuple[float, int, int]] = []
         for i, a in enumerate(nodes):
             ax, ay = pos[a]
             for b in nodes[i + 1 :]:
                 bx, by = pos[b]
                 dist_sq = (ax - bx) ** 2 + (ay - by) ** 2
                 if dist_sq <= self.radius**2:
-                    self.G.add_edge(a, b)
+                    candidates.append((dist_sq, a, b))
+
+        candidates.sort(key=lambda item: item[0])
+        degree = dict.fromkeys(nodes, 0)
+        for _dist_sq, a, b in candidates:
+            if degree[a] >= self.max_degree or degree[b] >= self.max_degree:
+                continue
+            self.G.add_edge(a, b)
+            degree[a] += 1
+            degree[b] += 1
 
     def _move_nodes(self):
         pos = nx.get_node_attributes(self.G, "pos")
