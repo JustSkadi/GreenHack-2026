@@ -1,30 +1,32 @@
 import { Platform } from 'react-native';
 
 export const colors = {
-  bg:           '#111218',
-  surface:      '#1c1d27',
-  surfaceHigh:  '#252637',
-  surfacePress: '#2e2f45',
+  bg:           '#4369AA',  // Czech blue-purple — shell / status bar
+  surface:      '#FFFFFF',  // white — screens and cards
+  surfaceHigh:  '#EEF2FF',  // light lavender — hover, selected states
+  surfacePress: '#E0E8FF',
 
-  border:       '#2d2e42',
-  borderStrong: '#3f405a',
+  border:       '#D0DCEF',
+  borderStrong: '#AABCDF',
 
-  text:         '#f0f0f5',
-  textSub:      '#8b8ca8',
-  textMuted:    '#52536a',
-  textInverted: '#111218',
+  text:         '#1A2B5A',  // dark navy — for white backgrounds
+  textSub:      '#3D5490',  // medium navy
+  textMuted:    '#7A90BE',  // muted blue
+  textInverted: '#FFFFFF',  // white — for use on bg (purple) backgrounds
 
-  red:          '#e53935',
-  redDim:       '#2d1212',
-  orange:       '#f97316',
-  yellow:       '#f59e0b',
-  green:        '#22c55e',
-  blue:         '#3b82f6',
+  red:          '#C62828',
+  redDim:       '#FFEBEE',
+  orange:       '#D84315',
+  yellow:       '#F57F17',
+  green:        '#2E7D32',
+  blue:         '#4369AA',  // Czech blue — primary action colour on white bg
+  purple:       '#7E57C2',  // purple — offline mode indicator
+  purpleDim:    '#EDE7F6',
 
-  tier1:        '#e53935',
-  tier2:        '#f97316',
-  tier3:        '#f59e0b',
-  tier4:        '#52536a',
+  tier1:        '#C62828',
+  tier2:        '#D84315',
+  tier3:        '#F57F17',
+  tier4:        '#7A90BE',
 };
 
 export const radius = {

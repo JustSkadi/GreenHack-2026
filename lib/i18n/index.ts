@@ -16,10 +16,10 @@ const en = {
   // SOS
   sos_label:         'EMERGENCY',
   sos_number:        '112',
-  sos_hint_idle:     'hold 2 seconds to call',
-  sos_hint_holding:  'hold...',
-  sos_hint_calling:  'connecting...',
-  sos_legal:         'Nexus automatically selects\nthe emergency number for your country',
+  sos_hint_idle:     'tap to send emergency SMS',
+  sos_hint_calling:  'SMS app opened...',
+  sos_no_location:   'no saved location (go online to cache GPS)',
+  sos_legal:         'SMS includes your last GPS location\nsaved automatically while online',
 
   // communicator
   comm_tab_all:       'ALL',
@@ -71,6 +71,8 @@ const en = {
   chat_loading:       'thinking...',
   chat_role_user:     'YOU',
   chat_role_ai:       'AI',
+  chat_error_quota:   'Too many requests — please wait a moment.',
+  chat_error_generic: 'Something went wrong. Try again.',
 
   // message item
   msg_unverified:     (score: number) => `⚠  unverified  ·  trust score: ${score}%`,
@@ -87,10 +89,10 @@ const cs: typeof en = {
 
   sos_label:         'POMOC',
   sos_number:        '112',
-  sos_hint_idle:     'podržte 2 sekundy pro volání',
-  sos_hint_holding:  'podržte...',
-  sos_hint_calling:  'připojuji...',
-  sos_legal:         'Nexus automaticky vybere\ntísňové číslo pro vaši zemi',
+  sos_hint_idle:     'klepněte pro odeslání tísňové SMS',
+  sos_hint_calling:  'SMS aplikace otevřena...',
+  sos_no_location:   'poloha neuložena (připojte se k internetu)',
+  sos_legal:         'SMS obsahuje vaši poslední GPS polohu\nuloženou automaticky při připojení',
 
   comm_tab_all:       'VŠICHNI',
   comm_tab_family:    'RODINA 🔒',
@@ -137,6 +139,8 @@ const cs: typeof en = {
   chat_loading:       'přemýšlím...',
   chat_role_user:     'VY',
   chat_role_ai:       'AI',
+  chat_error_quota:   'Příliš mnoho požadavků — chvíli počkejte.',
+  chat_error_generic: 'Něco se pokazilo. Zkuste to znovu.',
 
   msg_unverified:     (score: number) => `⚠  neověřeno  ·  skóre důvěry: ${score}%`,
 };

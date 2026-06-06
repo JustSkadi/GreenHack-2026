@@ -20,7 +20,7 @@ const PIN_COLORS: Record<MapPin['type'], string> = {
   food:      colors.orange,
   charging:  colors.yellow,
   shelter:   colors.green,
-  mesh_node: '#4488cc',
+  mesh_node: colors.purple,
   outage:    colors.textMuted,
 };
 
@@ -64,7 +64,6 @@ export default function MapScreen() {
       <MapView
         style={styles.map}
         initialRegion={PRAGUE_CENTER}
-        customMapStyle={darkMapStyle}
         showsUserLocation
         showsCompass={false}
         showsScale={false}
@@ -89,8 +88,8 @@ export default function MapScreen() {
             key={`zone-${pin.id}`}
             center={pin.coordinate}
             radius={600}
-            fillColor="rgba(192,57,43,0.12)"
-            strokeColor="rgba(192,57,43,0.35)"
+            fillColor="rgba(198,40,40,0.10)"
+            strokeColor="rgba(198,40,40,0.35)"
             strokeWidth={1}
           />
         ))}
@@ -156,32 +155,19 @@ export default function MapScreen() {
   );
 }
 
-const darkMapStyle = [
-  { elementType: 'geometry',           stylers: [{ color: '#1a1b26' }] },
-  { elementType: 'labels.text.fill',   stylers: [{ color: '#6b6c84' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#111218' }] },
-  { featureType: 'road',               elementType: 'geometry', stylers: [{ color: '#252637' }] },
-  { featureType: 'road.arterial',      elementType: 'geometry', stylers: [{ color: '#2d2e42' }] },
-  { featureType: 'road.highway',       elementType: 'geometry', stylers: [{ color: '#353650' }] },
-  { featureType: 'water',              elementType: 'geometry', stylers: [{ color: '#0d1520' }] },
-  { featureType: 'poi',                elementType: 'geometry', stylers: [{ color: '#1c1d27' }] },
-  { featureType: 'landscape',          elementType: 'geometry', stylers: [{ color: '#111218' }] },
-  { featureType: 'transit',            elementType: 'geometry', stylers: [{ color: '#1c1d27' }] },
-];
-
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
+  screen: { flex: 1, backgroundColor: colors.surface },
   map:    { flex: 1 },
 
   markerWrap: {
     width: 28, height: 28,
     borderRadius: radius.sm,
     borderWidth: 1.5,
-    backgroundColor: 'rgba(17,18,24,0.9)',
+    backgroundColor: 'rgba(255,255,255,0.96)',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.4,
+    shadowOpacity: 0.15,
     shadowRadius: 4,
     elevation: 3,
   },
@@ -200,9 +186,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: spacing.md,
     gap: 5,
-    shadowColor: '#000',
+    shadowColor: colors.purple,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.12,
     shadowRadius: 12,
     elevation: 8,
   },
@@ -223,7 +209,7 @@ const styles = StyleSheet.create({
     bottom: spacing.sm,
     left: spacing.sm,
     right: spacing.sm,
-    backgroundColor: 'rgba(17,18,24,0.94)',
+    backgroundColor: 'rgba(255,255,255,0.97)',
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
@@ -260,7 +246,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
-    backgroundColor: 'rgba(26,18,0,0.92)',
+    backgroundColor: 'rgba(255,249,230,0.97)',
     borderBottomWidth: 1,
     borderBottomColor: colors.yellow,
     paddingHorizontal: spacing.md,

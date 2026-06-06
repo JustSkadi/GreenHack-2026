@@ -214,7 +214,7 @@ export default function ChecklistScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
+  screen: { flex: 1, backgroundColor: colors.surface },
 
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -236,7 +236,7 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: spacing.md, paddingVertical: 10,
-    backgroundColor: colors.bg,
+    backgroundColor: colors.surface,
   },
   sectionLeft:    { flexDirection: 'row', alignItems: 'center', gap: 6 },
   sectionChevron: { fontFamily: mono, fontSize: 10, color: colors.textMuted, width: 10 },

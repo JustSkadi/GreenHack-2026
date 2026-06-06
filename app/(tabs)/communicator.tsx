@@ -208,7 +208,7 @@ export default function CommunicatorScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
+  screen: { flex: 1, backgroundColor: colors.surface },
 
   tabRow: {
     flexDirection: 'row',
@@ -223,7 +223,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
     borderRadius: radius.md, marginBottom: spacing.sm,
   },
-  tabActive:      { backgroundColor: colors.surface },
+  tabActive:      { backgroundColor: colors.surfaceHigh },
   tabLabel:       { fontFamily: mono, fontSize: 10, letterSpacing: 0.6, color: colors.textMuted },
   tabLabelActive: { color: colors.text, fontWeight: '600' },
   badge: {
@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
   tapHintText: { fontFamily: mono, fontSize: 9, color: colors.textMuted, letterSpacing: 0.3 },
 
   // ── Thread / Conversation ──
-  threadRoot:   { flex: 1, backgroundColor: colors.bg },
+  threadRoot:   { flex: 1, backgroundColor: colors.surface },
   threadHeader: {
     height: 54, flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: spacing.md, gap: spacing.sm,

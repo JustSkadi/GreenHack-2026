@@ -1,72 +1,78 @@
-import { useRef, useState } from 'react';
-import { View, Text, Animated, Pressable, Linking, StyleSheet } from 'react-native';
-import { FontAwesome5 } from '@expo/vector-icons';
+import { useEffect, useState } from 'react';
+import { View, Text, TouchableOpacity, Linking, Platform, StyleSheet } from 'react-native';
+import * as Location from 'expo-location';
 import { colors, spacing, mono, radius } from '../../constants/theme';
 import { useT } from '../../lib/i18n';
+import { useMeshStore } from '../../stores/meshStore';
+import { useLocationStore } from '../../stores/locationStore';
 
-const HOLD_MS = 2000;
 const EMERGENCY_NUMBER = '112';
+
+function buildSmsBody(lat: number | null, lon: number | null, savedAt: number | null): string {
+  const locLine = lat != null && lon != null
+    ? `GPS: ${lat.toFixed(5)}, ${lon.toFixed(5)}`
+    : 'GPS: unknown';
+  const timeLine = savedAt
+    ? `(at ${new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`
+    : '';
+  return `🆘 SOS - Nexus Emergency\n${locLine} ${timeLine}\nPlease send help immediately.`;
+}
 
 export default function SOSScreen() {
   const t = useT();
-  const progress = useRef(new Animated.Value(0)).current;
-  const anim     = useRef<Animated.CompositeAnimation | null>(null);
-  const [holding, setHolding] = useState(false);
-  const [called,  setCalled]  = useState(false);
+  const { mode } = useMeshStore();
+  const { lastKnown, savedAt, save } = useLocationStore();
+  const [smsSent, setSmsSent] = useState(false);
 
-  const handlePressIn = () => {
-    if (called) return;
-    setHolding(true);
-    anim.current = Animated.timing(progress, {
-      toValue: 1, duration: HOLD_MS, useNativeDriver: false,
-    });
-    anim.current.start(({ finished }) => {
-      if (finished) {
-        Linking.openURL(`tel:${EMERGENCY_NUMBER}`);
-        setCalled(true);
-        setHolding(false);
-        progress.setValue(0);
-      }
-    });
+  useEffect(() => {
+    if (mode !== 'online') return;
+    (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      save(pos.coords.latitude, pos.coords.longitude);
+    })();
+  }, [mode]);
+
+  const handleSOS = () => {
+    const body = buildSmsBody(lastKnown?.lat ?? null, lastKnown?.lon ?? null, savedAt);
+    const url = Platform.OS === 'android'
+      ? `sms:${EMERGENCY_NUMBER}?body=${encodeURIComponent(body)}`
+      : `sms:${EMERGENCY_NUMBER}&body=${encodeURIComponent(body)}`;
+    Linking.openURL(url).catch(() => {});
+    setSmsSent(true);
+    setTimeout(() => setSmsSent(false), 3000);
   };
 
-  const handlePressOut = () => {
-    anim.current?.stop();
-    Animated.timing(progress, { toValue: 0, duration: 300, useNativeDriver: false }).start(
-      () => setHolding(false),
-    );
-  };
-
-  const barWidth = progress.interpolate({
-    inputRange: [0, 1], outputRange: ['0%', '100%'],
-  });
-
-  const buttonScale = progress.interpolate({
-    inputRange: [0, 0.5, 1], outputRange: [1, 0.97, 0.95],
-  });
-
-  const hint = called ? t.sos_hint_calling : holding ? t.sos_hint_holding : t.sos_hint_idle;
+  const locLabel = lastKnown
+    ? `${lastKnown.lat.toFixed(4)}°N  ${lastKnown.lon.toFixed(4)}°E`
+    : null;
 
   return (
     <View style={styles.screen}>
       <View style={styles.top} />
 
       <View style={styles.center}>
-        <Animated.View style={[styles.buttonWrap, { transform: [{ scale: buttonScale }] }]}>
-          <Pressable style={styles.button} onPressIn={handlePressIn} onPressOut={handlePressOut} android_disableSound>
-            <FontAwesome5 name="plus" size={90} color={colors.red} solid />
-            <Text style={styles.labelNumber}>{t.sos_number}</Text>
+        <TouchableOpacity
+          style={[styles.button, smsSent && styles.buttonSent]}
+          onPress={handleSOS}
+          activeOpacity={0.75}
+        >
+          <Text style={styles.sosText}>SOS</Text>
+          <Text style={styles.smsText}>{smsSent ? t.sos_hint_calling : 'SMS'}</Text>
+        </TouchableOpacity>
 
-            {holding && (
-              <Animated.View style={[styles.progressBar, { width: barWidth }]} />
-            )}
-          </Pressable>
-        </Animated.View>
-
-        <Text style={styles.hint}>{hint}</Text>
+        <Text style={styles.hint}>{smsSent ? t.sos_hint_calling : t.sos_hint_idle}</Text>
       </View>
 
       <View style={styles.bottom}>
+        <View style={styles.locRow}>
+          <View style={[styles.locDot, { backgroundColor: lastKnown ? colors.green : colors.textMuted }]} />
+          <Text style={styles.locText}>
+            {locLabel ?? t.sos_no_location}
+          </Text>
+        </View>
+
         <View style={styles.numberRow}>
           {[['EU', '112'], ['PL', '112'], ['UK', '999'], ['US', '911']].map(([region, num]) => (
             <View key={region} style={styles.numberTag}>
@@ -84,7 +90,7 @@ export default function SOSScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: colors.bg,
+    backgroundColor: colors.surface,
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.xl,
@@ -92,40 +98,39 @@ const styles = StyleSheet.create({
   top:    { height: spacing.xxl },
   center: { alignItems: 'center', gap: spacing.lg },
 
-  buttonWrap: {
+  button: {
     width: '72%',
     aspectRatio: 1,
-    shadowColor: colors.red,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 28,
-    elevation: 14,
-  },
-  button: {
-    flex: 1,
     backgroundColor: colors.surface,
     borderRadius: radius.xl,
     borderWidth: 1.5,
     borderColor: colors.red,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    overflow: 'hidden',
+    gap: 8,
+    shadowColor: colors.red,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 28,
+    elevation: 14,
   },
-  labelNumber: {
+  buttonSent: {
+    borderColor: colors.green,
+    shadowColor: colors.green,
+  },
+  sosText: {
     fontFamily: mono,
-    fontSize: 28,
-    fontWeight: '300',
-    color: colors.textSub,
-    letterSpacing: 6,
+    fontSize: 52,
+    fontWeight: '700',
+    color: colors.red,
+    letterSpacing: 4,
   },
-  progressBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    height: 3,
-    backgroundColor: colors.red,
-    borderBottomLeftRadius: radius.xl,
+  smsText: {
+    fontFamily: mono,
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.textSub,
+    letterSpacing: 3,
   },
 
   hint: {
@@ -134,7 +139,13 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     letterSpacing: 0.4,
   },
-  bottom:    { gap: spacing.md, alignItems: 'center' },
+
+  bottom:  { gap: spacing.md, alignItems: 'center' },
+
+  locRow:  { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  locDot:  { width: 6, height: 6, borderRadius: 3 },
+  locText: { fontFamily: mono, fontSize: 10, color: colors.textMuted, letterSpacing: 0.4 },
+
   numberRow: { flexDirection: 'row', gap: spacing.sm },
   numberTag: {
     backgroundColor: colors.surface,

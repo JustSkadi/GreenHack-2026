@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect } from 'react';
 import {
   View, Text, Modal, TextInput, TouchableOpacity,
-  FlatList, StyleSheet, KeyboardAvoidingView, Platform,
+  FlatList, StyleSheet, KeyboardAvoidingView,
   ActivityIndicator, PanResponder, Animated, Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, spacing, mono, radius } from '../constants/theme';
 import { useMeshStore } from '../stores/meshStore';
 import { useT } from '../lib/i18n';
+import { askOnline } from '../lib/ai/onlineChat';
+import { askOffline } from '../lib/ai/offlineChat';
 
 interface ChatMessage {
   id: string;
@@ -25,11 +27,17 @@ export default function ChatBubble() {
   const [open, setOpen]       = useState(false);
   const [input, setInput]     = useState('');
   const [loading, setLoading] = useState(false);
-  const [history, setHistory] = useState<ChatMessage[]>([
-    { id: 'welcome', role: 'assistant', text: t.chat_welcome },
+  const [onlineHistory, setOnlineHistory] = useState<ChatMessage[]>([
+    { id: 'welcome-online', role: 'assistant', text: t.chat_welcome },
+  ]);
+  const [offlineHistory, setOfflineHistory] = useState<ChatMessage[]>([
+    { id: 'welcome-offline', role: 'assistant', text: t.chat_welcome },
   ]);
   const flatRef = useRef<FlatList>(null);
   const { mode } = useMeshStore();
+
+  const history    = mode === 'online' ? onlineHistory    : offlineHistory;
+  const setHistory = mode === 'online' ? setOnlineHistory : setOfflineHistory;
 
   // Draggable position
   const posX    = useRef(new Animated.Value(SW - BUBBLE - EDGE)).current;
@@ -80,9 +88,13 @@ export default function ChatBubble() {
     setHistory(h => [...h, { id: `u-${Date.now()}`, role: 'user', text }]);
     setLoading(true);
     try {
-      // [P4] reply = await askOnline(text) / askOffline(text)
-      const reply = `[MOCK] ${text}`;
+      const reply = mode === 'online' ? await askOnline(text) : await askOffline(text);
       setHistory(h => [...h, { id: `a-${Date.now()}`, role: 'assistant', text: reply }]);
+    } catch (err: any) {
+      const msg = err?.message?.includes('429')
+        ? t.chat_error_quota
+        : (err?.message ?? t.chat_error_generic);
+      setHistory(h => [...h, { id: `e-${Date.now()}`, role: 'assistant', text: msg }]);
     } finally {
       setLoading(false);
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
@@ -92,16 +104,20 @@ export default function ChatBubble() {
   return (
     <>
       <Animated.View
-        style={[styles.bubble, { left: posX, top: posY }]}
+        style={[
+          styles.bubble,
+          { left: posX, top: posY },
+          mode === 'offline' && styles.bubbleOffline,
+        ]}
         {...panResponder.panHandlers}
       >
-        <Text style={styles.bubbleText}>AI</Text>
-        <View style={[styles.modeDot, { backgroundColor: mode === 'online' ? colors.green : colors.textMuted }]} />
+        <Text style={[styles.bubbleText, mode === 'offline' && styles.bubbleTextOffline]}>AI</Text>
+        <View style={[styles.modeDot, { backgroundColor: mode === 'online' ? colors.green : colors.purple }]} />
       </Animated.View>
 
       <Modal visible={open} animationType="slide" transparent onRequestClose={() => setOpen(false)}>
         <View style={styles.overlay}>
-          <View style={styles.sheet}>
+          <KeyboardAvoidingView style={styles.sheet} behavior="padding">
             <View style={styles.handleWrap}>
               <View style={styles.handle} />
             </View>
@@ -110,8 +126,10 @@ export default function ChatBubble() {
               <View>
                 <Text style={styles.sheetTitle}>{t.chat_title}</Text>
                 <View style={styles.modeRow}>
-                  <View style={[styles.modeDotSmall, { backgroundColor: mode === 'online' ? colors.green : colors.textMuted }]} />
-                  <Text style={styles.modeText}>{mode === 'online' ? 'online · cloud' : 'offline · on-device'}</Text>
+                  <View style={[styles.modeDotSmall, { backgroundColor: mode === 'online' ? colors.green : colors.purple }]} />
+                  <Text style={[styles.modeText, mode === 'offline' && styles.modeTextOffline]}>
+                    {mode === 'online' ? 'online · cloud' : 'offline · on-device'}
+                  </Text>
                 </View>
               </View>
               <TouchableOpacity onPress={() => setOpen(false)} style={styles.closeBtn}>
@@ -130,7 +148,11 @@ export default function ChatBubble() {
                   <Text style={styles.roleLabel}>
                     {item.role === 'user' ? t.chat_role_user : t.chat_role_ai}
                   </Text>
-                  <Text style={[styles.msgText, item.role === 'user' && styles.msgTextUser]}>
+                  <Text style={[
+                    styles.msgText,
+                    item.role === 'user' && styles.msgTextUser,
+                    item.role === 'assistant' && mode === 'offline' && styles.msgTextOfflineAI,
+                  ]}>
                     {item.text}
                   </Text>
                 </View>
@@ -144,24 +166,22 @@ export default function ChatBubble() {
               </View>
             )}
 
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-              <View style={styles.inputRow}>
-                <TextInput
-                  style={styles.input}
-                  value={input}
-                  onChangeText={setInput}
-                  placeholder={t.chat_placeholder}
-                  placeholderTextColor={colors.textMuted}
-                  onSubmitEditing={send}
-                  returnKeyType="send"
-                  multiline
-                />
-                <TouchableOpacity style={styles.sendBtn} onPress={send}>
-                  <Text style={styles.sendText}>↑</Text>
-                </TouchableOpacity>
-              </View>
-            </KeyboardAvoidingView>
-          </View>
+            <View style={styles.inputRow}>
+              <TextInput
+                style={styles.input}
+                value={input}
+                onChangeText={setInput}
+                placeholder={t.chat_placeholder}
+                placeholderTextColor={colors.textMuted}
+                onSubmitEditing={send}
+                returnKeyType="send"
+                multiline
+              />
+              <TouchableOpacity style={styles.sendBtn} onPress={send}>
+                <Text style={styles.sendText}>↑</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </>
@@ -183,8 +203,13 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
-  bubbleText: { fontFamily: mono, fontSize: 11, fontWeight: '700', color: colors.text },
-  modeDot:    { position: 'absolute', top: 7, right: 7, width: 5, height: 5, borderRadius: 3 },
+  bubbleOffline: {
+    backgroundColor: colors.purpleDim,
+    borderColor: colors.purple,
+  },
+  bubbleText:        { fontFamily: mono, fontSize: 11, fontWeight: '700', color: colors.text },
+  bubbleTextOffline: { color: colors.purple },
+  modeDot:           { position: 'absolute', top: 7, right: 7, width: 5, height: 5, borderRadius: 3 },
 
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   sheet: {
@@ -203,7 +228,8 @@ const styles = StyleSheet.create({
   sheetTitle:   { fontSize: 16, fontWeight: '700', color: colors.text },
   modeRow:      { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
   modeDotSmall: { width: 5, height: 5, borderRadius: 3 },
-  modeText:     { fontFamily: mono, fontSize: 9, color: colors.textMuted },
+  modeText:        { fontFamily: mono, fontSize: 9, color: colors.textMuted },
+  modeTextOffline: { color: colors.purple },
   closeBtn:     { width: 32, height: 32, borderRadius: radius.md, backgroundColor: colors.surfaceHigh, alignItems: 'center', justifyContent: 'center' },
   closeText:    { fontSize: 13, color: colors.textSub },
 
@@ -217,7 +243,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceHigh,
     padding: spacing.md, borderRadius: radius.md,
   },
-  msgTextUser: { backgroundColor: colors.blue, color: '#fff' },
+  msgTextUser:      { backgroundColor: colors.blue, color: '#fff' },
+  msgTextOfflineAI: { backgroundColor: colors.purpleDim, color: colors.text },
 
   loadingRow:  { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: spacing.md, paddingVertical: 6 },
   loadingText: { fontFamily: mono, fontSize: 10, color: colors.textMuted },
