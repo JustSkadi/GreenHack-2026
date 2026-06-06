@@ -171,6 +171,11 @@ class MultiMeshEnv:
     def _move_nodes(self):
         pos = nx.get_node_attributes(self.G, "pos")
         for n in self.G.nodes:
+            frozen = self.G.nodes[n].get("pos_frozen")
+            if frozen is not None:
+                pos[n] = frozen
+                self.velocities[n] = (0.0, 0.0)
+                continue
             if self.G.nodes[n].get("is_112"):
                 pin = self.G.nodes[n].get("pos_pin")
                 if pin is not None:
@@ -477,21 +482,41 @@ class MultiMeshEnv:
             return True
         return False
 
+    def freeze_all_positions(self):
+        pos = nx.get_node_attributes(self.G, "pos")
+        for n in self.G.nodes:
+            self.G.nodes[n]["pos_frozen"] = tuple(pos[n])
+            self.velocities[n] = (0.0, 0.0)
+
+    def thaw_all_positions(self):
+        for n in self.G.nodes:
+            self.G.nodes[n].pop("pos_frozen", None)
+
     def clear_emergency_markers(self):
         for n in self.G.nodes:
             if self.G.nodes[n].get("is_112"):
                 self.G.nodes[n]["is_112"] = False
                 self.G.nodes[n].pop("pos_pin", None)
                 self.G.nodes[n]["mobility"] = float(np.random.uniform(0.0, 1.0))
+        self.thaw_all_positions()
 
     def setup_rcb_broadcast(self, route: Route, rng) -> bool:
-        """Run 3: alert RCB ze stacji 112 — flood do wszystkich węzłów w składowej."""
+        """Run 2: alert RCB — stacja 112 na środku, graf zamrożony."""
         nodes = list(self.G.nodes)
         if not nodes:
             return False
 
         self.clear_emergency_markers()
-        station = rng.choice(nodes)
+        center = (0.5, 0.5)
+        pos = nx.get_node_attributes(self.G, "pos")
+        station = min(
+            nodes,
+            key=lambda n: (pos[n][0] - center[0]) ** 2 + (pos[n][1] - center[1]) ** 2,
+        )
+        pos[station] = center
+        nx.set_node_attributes(self.G, pos, "pos")
+        self._rebuild_edges()
+
         route.source = station
         route.destination = station
         route.label = "RCB→ALL"
@@ -503,10 +528,12 @@ class MultiMeshEnv:
         route.current_node = station
         route.path = [station]
 
+        self.freeze_all_positions()
+        self.G.nodes[station]["pos_frozen"] = center
+        self.G.nodes[station]["pos_pin"] = center
         self.G.nodes[station]["mobility"] = 0.0
         self.G.nodes[station]["is_112"] = True
         self.velocities[station] = (0.0, 0.0)
-        self._pin_station(station)
         return True
 
     def reroll_route_endpoints(self, route: Route, rng) -> bool:
