@@ -49,308 +49,337 @@ NORMAL CONDITIONS          ←→          CRISIS / BLACKOUT
      [ONLINE MODE]                      [OFFLINE MODE]
   Cloud AI · internet                WiFi Direct mesh · local AI
   Standard messaging                 Encrypted peer-to-peer graph
-  Government alerts                  Priority hierarchy broadcasts
+  Government alerts                  Priority broadcasts
 ```
 
 The backbone of the offline mode is a **mesh network graph** built entirely on WiFi Direct — no internet, no cellular, no electricity infrastructure required. Just charged phones.
 
 ---
 
-## Architecture
+## Repository Structure
 
-### Online Mode
-
-When infrastructure is intact, Nexus operates as a standard, cloud-connected application:
-
-- **Cloud AI Chatbot** — powered by a capable LLM (e.g. Claude / GPT-4 class), answers questions about crisis preparedness, what to do in case of X disaster, how to help others
-- **Standard messaging** — regular internet-based group and direct messages
-- **Government alert feed** — pull from official RCB / EU-ALERT systems
-- **Checklist sync** — government pushes updated preparedness checklists to all users
-
-### Offline Mode — The Core
-
-When the grid or network fails, Nexus switches to a **self-organizing WiFi Direct mesh network**:
+This repository contains three fully implemented components, developed in parallel across branches:
 
 ```
-     [Phone A] ──── 80m ──── [Phone B] ──── 60m ──── [Phone C]
-         │                       │                       │
-         └──── 95m ──── [Phone D] ──── 70m ──── [Phone E]
+GreenHack-2026/
+├── nexus/          ← React Native mobile app  (branch: P2PconnectAdam)
+│   └── lib/mesh/   ← Wi-Fi Direct P2P layer
+├── app/            ← Expo frontend UI         (branch: wera)
+│   ├── (tabs)/     ← SOS, Communicator, Checklist, Map
+│   └── components/ ← ChatBubble, MeshStatusBar, PriorityBanner
+└── mesh/           ← Python RL routing agent  (branch: develop/mesh*)
+    └── src/        ← training, simulation, visualization
 ```
 
-- Each device is a **node** in a dynamic graph
-- Edges exist between devices within **≤100m** (WiFi Direct range)
-- Messages are **routed through the graph** — reaching a phone 500m away via 5 hops
-- No router, no tower, no power grid needed
+---
 
-> WiFi Direct specification: peer-to-peer connections up to ~200m in open space, ~100m in urban environments.
-> — [Wi-Fi Alliance — Wi-Fi Direct](https://www.wi-fi.org/discover-wi-fi/wi-fi-direct)
+## What We Built
 
-#### Reinforcement Learning Routing Agent
+### 1. Mobile App — React Native / Expo (branch: `wera`)
 
-Instead of a static algorithm (e.g. Dijkstra), Nexus uses a **trained DQN agent** to make routing decisions. The agent learns to avoid bottlenecks, dying batteries, and congested nodes — adapting in real time to the changing topology of a crisis.
+A fully implemented Expo (React Native) app with 4 screens, multilingual support, and a floating AI assistant.
+
+**Tech stack:** Expo SDK 56, React Native, TypeScript, Zustand, Groq API (online), llama.rn/Gemma 2B (offline placeholder)
+
+#### Screen 1 — Emergency SOS
+
+One large button. Taps open a pre-filled SMS to **112** containing the user's last known GPS coordinates (latitude/longitude, cached from last online session). Works fully offline — uses the GSM voice/SMS layer, not internet.
+
+- GPS cached automatically while online via `expo-location`
+- SMS body format: `SOS - Nexus Emergency · GPS: lat, lon · (time)`
+- Fallback notice when no GPS was ever cached
+
+#### Screen 2 — Communicator
+
+Three-tab message interface with real-time online/offline mode switching:
+
+| Tab | Description |
+|-----|-------------|
+| **ALL** | Global mesh broadcast — all nodes |
+| **FAMILY** | End-to-end encrypted private group (AES, family key) |
+| **ALERTS** | Read-only — priority broadcasts only |
+
+- Threaded message view per sender
+- Animated `PriorityBanner` — RCB-style urgent alert bar that slides in from top
+- `MeshStatusBar` — persistent header showing ONLINE / OFFLINE MESH state, peer count, RL badge when AI routing is active, EN/CS language toggle
+
+#### Screen 3 — Preparedness Checklist
+
+Government-style checklist with 5 categories: **WATER, FOOD, MEDICAL, POWER, DOCUMENTS**
+
+- Items can be checked off with a tap
+- Expiry date tracking — shows countdown ("EXPIRES: 12d"), "EXPIRES TODAY", "EXPIRED"
+- Admin users can add custom items via modal
+- Collapsible category sections
+
+#### Screen 4 — AI Chatbot (Floating Bubble)
+
+Draggable bubble (top-right by default) available on every screen. Opens a full chat modal.
+
+| Mode | Implementation |
+|------|---------------|
+| **Online** | Groq API (`llama-3.1-8b-instant`) — full-speed cloud LLM |
+| **Offline** | Placeholder for `llama.rn` + Gemma 2 2B GGUF (~1.5 GB, pre-downloaded) |
+
+System prompt tunes the assistant for Central European crisis scenarios: CPR steps, flood evacuation, gas leaks, infrastructure failure. Responds in the user's language (PL/CS/EN/SK).
+
+#### Screen 5 — Crisis Map
+
+Offline-capable map tab (data pre-downloaded during online sync):
+- Hospitals, water distribution, charging stations, resilience centers
+- Offline tile cache notice
+- `png/` folder contains demo screenshots from the running app
+
+#### Shared Infrastructure
+
+- **Zustand stores**: `meshStore` (mode, peers, messages, routing), `authStore` (profile), `locationStore` (GPS cache), `appModeStore` (online/offline switch)
+- **i18n**: full EN/CS translation keys covering all UI strings
+- **Theme**: Czech-flag blue (`#4369AA`) on white, monospace typography
+
+---
+
+### 2. Wi-Fi Direct P2P Mesh Layer (branch: `P2PconnectAdam`)
+
+A complete native Android mesh networking implementation inside `nexus/lib/mesh/`.
+
+**Tech stack:** `react-native-wifi-p2p`, `react-native-tcp-socket`, `tweetnacl`, `crypto-js`, `socket.io-client`, `expo-battery`
+
+#### Wi-Fi Direct (`wifiDirect.ts`)
+
+- Runtime permission requests for Android 12 and 13+ (`NEARBY_WIFI_DEVICES` API 33)
+- `initWifiDirect()` — initializes `react-native-wifi-p2p`, subscribes to peer and connection updates
+- `discoverPeers()` / `stopDiscoveringPeers()` — active scan lifecycle
+- `connectToPeer(deviceAddress)` — P2P group formation
+- `startAutoMesh()` — background interval that continuously discovers and connects to nearby devices, building a multi-hop graph automatically
+- Group Owner vs. Client role detection → wires up TCP server or client accordingly
+
+#### TCP Transport (`tcpSockets.ts`)
+
+- `startTcpServer()` — TCP server on port 8888 (Group Owner role), accepts multiple simultaneous clients
+- `connectTcpClient(groupOwnerIp)` — TCP client (non-Group-Owner role)
+- Ping/pong heartbeat — measures round-trip latency per peer, marks peers disconnected on timeout
+- `handleIncomingData()` — JSON frame parsing, duplicate message detection (by `id`), TTL-based flooding relay to all active sockets
+- Battery level read via `expo-battery` and attached to outgoing messages
+
+#### Encryption (`crypto.ts` + `cryptoAsym.ts`)
+
+| Layer | Algorithm | Use case |
+|-------|-----------|----------|
+| Symmetric | AES (crypto-js) | Family group shared-key encryption |
+| Asymmetric | NaCl box (Curve25519 + XSalsa20-Poly1305 via tweetnacl) | Direct peer-to-peer E2E messages |
+
+Key pair generated locally at startup, public key shared with peers via mesh profile exchange.
+
+#### LAN Simulation (`lanSimulation.ts`)
+
+Socket.IO client that connects to a developer laptop running a mock mesh server — allows multi-device simulation over a local Wi-Fi network without needing Android hardware. Used during development to test routing and message delivery.
+
+---
+
+### 3. Mesh Routing — Two Approaches (branch: `develop/mesh`, `develop/mesh-PW`)
+
+We implemented and compared two fundamentally different routing strategies for the mesh network, both written in Python and visualized with Matplotlib animations.
+
+**Tech stack:** Python 3.11+, PyTorch, NetworkX, Hydra, Weights & Biases, ONNX, uv, Matplotlib, imageio-ffmpeg
+
+---
+
+#### Approach A — Algorithmic: BFS Routing Tree + Self-Healing
+
+**Files:** `government_server.py`, `network_node.py`, `simulation.py`
+
+The network is modeled as a **rooted spanning tree** where the government server (node 0) is the root. Every phone knows only two things: its parent and its hop count to the server. Routing a message goes up the tree to the server, then back down to the destination.
+
+**`GovernmentServer` (node 0)**
+
+Builds the routing tree using BFS from itself:
+- `build_routing_tree_steps()` — generator that yields `(node_id, parent_id, hop_count)` one discovery at a time, enabling step-by-step animation
+- Assigns every reachable node a parent and a hop count; serves as the root of all routing paths
+
+**`NetworkNode`**
+
+Each phone node implements one critical method — `handle_disconnection()`:
+- When a node's parent goes offline, it scans its physical neighbors
+- Picks the neighbor with the **strictly lowest hop count** (anti-loop invariant: never re-parent to a node worse than yourself)
+- If no valid neighbor exists, marks itself isolated (`hop_count = ∞`)
+
+**`simulation.py`** — full live simulation (150 nodes, 1.5 km × 1.5 km)
+
+The simulation runs continuously at 60 FPS and handles:
+- **Node mobility**: spring-physics movement (Brownian random forces + momentum damping + wall bouncing); edges update with hysteresis (`RANGE_RADIUS + 0.015`) to prevent flickering on the boundary
+- **`silent_routing_update()`**: triggered every physics frame — runs `handle_disconnection()` on orphaned nodes when edges break, runs `optimize_all_routes()` when new edges appear
+- **`optimize_all_routes()`**: full network scan sorted from lowest to highest hop count, finds shorter paths for every node in a cascading loop until stable; also recovers isolated nodes
+- **`reconnect_isolated_nodes()`**: actively finds any isolated node with a free physical slot and connects it to the nearest in-network neighbor
+- **Auto events**: random node spawn or kill every ~2.8 s to simulate phones joining/leaving
+- **Manual events**: left-click to kill a node, right-click to add one
+- **Message routing**: packet travels hop-by-hop up the BFS tree to the server, then down to the destination; if an edge breaks mid-flight the server re-routes
+- **RCB broadcast**: server simultaneously sends to all its direct children, who forward to theirs — a BFS wave that reaches the entire mesh in `max_hop` steps
+- `--record` flag switches to headless Agg backend and exports MP4 via imageio-ffmpeg
+
+| Property | Value |
+|----------|-------|
+| Nodes | 150, random geometric graph |
+| Area | 1.5 km × 1.5 km |
+| Node range | 0.22 (regular), 0.32 (server) |
+| Max connections | 4 per node, 50 for server |
+| Animation | 60 FPS, ~16 ms/frame |
+
+---
+
+#### Approach B — Reinforcement Learning: Trained DQN Agent
+
+**Files:** `mesh/src/env/mesh_env.py`, `mesh/src/env/multi_mesh_env.py`, `mesh/src/agent/net.py`, `mesh/src/train.py`, `mesh/src/router.py`, `mesh/src/render_multi.py`
+
+Instead of a fixed algorithm, a neural network is trained in simulation to score routing decisions. Each node independently evaluates its neighbors and picks the one with the highest Q-value — no central coordination, no tree structure.
+
+**Simulation environment (`MeshEnv`)**
+
+- `nx.random_geometric_graph(N, radius)` — random ad-hoc topology, regenerated each episode
+- Each node has: `battery` (0.2–1.0), `mobility`, `degree`
+- `irl_mode`: nodes move, battery drains, edges randomly drop (`node_drop_prob`)
+- Routing task: deliver a packet from `source → destination` in ≤ `max_hops` hops
+- Store-and-forward: waits up to `max_store_steps` for a neighbor to reappear
+- Reconnect heuristic: up to `max_reconnect_attempts` before giving up
+- Gossip warmup: `gossip_warmup_steps` initial steps for topology propagation
+
+`MultiMeshEnv` handles multiple simultaneous routes in a single environment step.
+
+**Neural network (`TopologyAgent`)**
 
 ```
-Training pipeline (Python, runs offline before deployment):
+Input:  8-dim state vector per candidate neighbor
+        [battery, priority, degree, hop_count, ...]
+Hidden: Linear(8→128) → ReLU → Linear(128→128) → ReLU → Linear(128→64) → ReLU
+Output: Linear(64→1) — scalar Q-value (routing score)
 
-  NetworkX Graph Simulation
-  ├── Nodes: phones with battery%, degree, tier
-  ├── Edges: P2P connections that randomly drop
-  └── Dynamics: nodes move, batteries drain, edges break
-
-       ↓  state vector per neighbor
-
-  PyTorch MLP (DQN Agent)
-  ├── Input:  [battery/100, priority/4, degree/max, hop_count/ttl]
-  ├── Output: Q-value per neighbor (= routing score)
-  └── Learns via reward signal:
-        +100  message reaches Command Node (gov tier)
-        -10   per bottleneck edge created
-        -exp  routing through low-battery node
-
-  Managed by Hydra (CLI hyperparams) + W&B (training dashboard)
-
-       ↓  after convergence
-
-  ONNX export → quantized weights (~few hundred KB)
-  Deployed via onnxruntime-react-native on device
+Decision: argmax Q-value across all neighbors
 ```
 
-The trained `.onnx` model is bundled with the app. During offline mesh operation, each routing decision calls the model with a neighbor's state vector and picks the highest Q-value path. A classic flooding algorithm serves as fallback if inference fails.
+**Training (`train.py`)** — curriculum learning in three stages:
 
-#### Local AI Model (Offline Chatbot)
+1. **Static**: fixed topology, no mobility or drops — agent learns basic shortest-path routing
+2. **IRL easy**: nodes move at 0.5× speed, no drops — agent adapts to topology changes
+3. **IRL full**: full mobility + random node drops — agent handles real crisis conditions
 
-A compact, on-device language model serves as the offline AI assistant:
+Managed by **Hydra** (YAML configs in `mesh/conf/`) + **Weights & Biases** (training curves, delivery rate). Evaluation: 80-episode delivery rate benchmark per epoch.
 
-- Candidate models: **Llama 3.2 1B** (~2 GB), **Phi-3 Mini** (~2.3 GB), **Gemma 2B** (~1.5 GB)
-- Focused on: first aid instructions, crisis navigation, step-by-step emergency guidance
-- Knowledge is **pre-downloaded** and updated during online mode
-- Does NOT require internet — runs entirely on device CPU/NPU
+**Deployment:** trained model exported to `mesh/src/model.onnx.data` — ready for `onnxruntime-react-native` on-device inference.
 
-> Llama 3.2 1B model: [huggingface.co/meta-llama/Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B)
-> Phi-3 Mini: [huggingface.co/microsoft/Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
+**`render_multi.py`** — dedicated visualization for the RL agent:
+- Smooth edge color interpolation (new edges = blue flash, dropped edges = red ghost fade)
+- RCB station node rendered in amber, 2× larger than regular nodes
+- RCB broadcast phase runs at 5× slower speed so the wave propagation is visible frame by frame
+- `--record` exports `symulacja.mp4`
+
+---
+
+#### Comparison
+
+| | BFS + Self-Healing | RL Agent |
+|---|---|---|
+| **Architecture** | Centralized spanning tree (server = root) | Decentralized per-node scoring |
+| **Routing decision** | Follow parent pointer up to server, then down | argmax Q-value over neighbors |
+| **Failure recovery** | `handle_disconnection()` — reactive re-parenting | Trained to route around bad nodes |
+| **Battery awareness** | No (not a routing factor) | Yes — learned from reward signal |
+| **Requires training** | No | Yes (curriculum, ~hours on CPU) |
+| **Deployment size** | Zero (pure algorithm) | `model.onnx.data` (~few hundred KB) |
+| **Fallback** | None needed | `greedy_to()` (Dijkstra) if inference fails |
+| **Simulation** | 150 nodes, live interactive, 60 FPS | 50 nodes, episode-based training env |
 
 ---
 
 ## Security Architecture
 
-### Troll Detection & Disinformation Prevention
+### Encryption — Implemented
 
-During a crisis, false information can cost lives. Nexus implements multi-layer protection:
+| Scope | Algorithm | Status |
+|-------|-----------|--------|
+| Direct messages | NaCl box (Curve25519 + XSalsa20-Poly1305) | Implemented |
+| Family group | AES-256 (shared password) | Implemented |
+| Key exchange | Local key pair generated at startup, public key gossiped via mesh | Implemented |
 
-1. **AI-based troll detection** — on-device ML model flags messages containing patterns of disinformation (false emergency locations, panic-inducing unverified claims)
-2. **Message trust scoring** — each message carries a trust score based on sender tier and network behavior
-3. **Community flagging** — users can flag suspicious messages, which are then deprioritized in routing
+### Message Structure
 
-### User Hierarchy
-
-Not all messages are equal. Nexus enforces a verified sender hierarchy:
-
-```
-🔴 TIER 1 — Government / Emergency Services   (cryptographically signed)
-🟠 TIER 2 — Verified institutions (hospitals, municipalities)
-🟡 TIER 3 — Verified community leaders
-🟢 TIER 4 — Regular users
-```
-
-Priority messages from Tier 1–2 behave like **RCB alerts** — they bypass normal routing limits and reach the entire local mesh first.
-
-### Family & Group Encrypted Communication
-
-- Each family/household can create a **private encrypted group**
-- Messages within the group use **end-to-end encryption** (e.g., Signal Protocol / Curve25519)
-- Members of the same apartment building can communicate securely, even if other nodes in the mesh are compromised
-- The encryption keys are **derived locally** — no server involved
+Each `MeshMessage` carries: `hops[]` (full path), `ttl`, `isPriority`. Duplicate detection (by message `id`) prevents message replay in the mesh.
 
 ---
 
-## App Structure — 5 Screens
+## App Screens — Screenshots
 
-### Screen 1 — Emergency SOS
+Screenshots from the running app are in `png/`:
 
-```
-┌────────────────────────────┐
-│                            │
-│   ┌──────────────────┐     │
-│   │                  │     │
-│   │    🆘 RATUNKU    │     │
-│   │   (tap to call)  │     │
-│   │                  │     │
-│   └──────────────────┘     │
-│                            │
-│   Auto-detects country     │
-│   Connects to local 112    │
-│                            │
-└────────────────────────────┘
-```
-
-One large button. One action. Works offline (GSM fallback). Automatically dials the local emergency number (112 in EU, 999 in UK, 911 in US).
-
----
-
-### Screen 2 — Communicator
-
-The main messaging interface with a visible **ONLINE / OFFLINE** toggle indicator.
-
-**Online:**
-- Standard messaging (groups, DMs, broadcast)
-- Government alert feed
-- Full emoji, media, file sharing
-
-**Offline (WiFi Direct mesh):**
-- Text-only messaging (bandwidth optimization)
-- User tier badges visible on all messages
-- Troll detection warnings in-line
-- Family group with lock icon (encrypted)
-- Broadcast channel for Tier 1 priority alerts
-- Mesh signal strength indicator (how many hops to nearest router node)
-
----
-
-### Screen 3 — Preparedness Checklist
-
-A government-maintained, category-organized checklist of what every household should have before a crisis:
-
-**Example categories:**
-
-#### Water
-- [ ] Minimum 3L per person per day for 3 days stored
-- [ ] Water purification tablets (Iodine / Chlorine)
-- [ ] Manual water filter (LifeStraw or equivalent)
-
-#### Food
-- [ ] Non-perishable food supply for 72 hours minimum
-- [ ] 🗓️ *Enter expiry dates manually — app sends push notifications 7 days before expiry*
-- [ ] Manual can opener
-
-#### Medical
-- [ ] First aid kit (bandages, antiseptic, scissors, gloves)
-- [ ] 14-day supply of personal prescription medications
-- [ ] Thermometer + blood pressure monitor (non-electric)
-
-#### Power & Communication
-- [ ] Fully charged power bank (minimum 20,000 mAh)
-- [ ] Battery-powered or hand-crank radio (DAB/FM)
-- [ ] Nexus app pre-configured and tested
-
-#### Documents
-- [ ] Copies of ID, passport, insurance documents
-- [ ] Emergency contacts list (physical printout)
-- [ ] Cash reserve (ATMs will be down)
-
-> The WHO recommends a minimum 72-hour emergency supply for households in urban areas.
-> — [WHO Emergency Preparedness Guidelines](https://www.who.int/publications/i/item/9789240003545)
-
-> FEMA's Ready.gov recommends a minimum 3-day supply of water (1 gallon/person/day) and food.
-> — [ready.gov/kit](https://www.ready.gov/kit)
-
-> Czech Republic civil emergency preparedness guidelines (HZS ČR):
-> — [hzscr.cz](https://www.hzscr.cz/clanek/jak-se-pripravit-na-krizi.aspx)
-
----
-
-### Screen 4 — AI Chatbot (Floating Bubble, top-right)
-
-Available as a persistent floating bubble across all screens.
-
-**Online mode — Cloud AI:**
-- Full LLM capability
-- Example questions: *"What should I do if my neighbor is having a heart attack and paramedics can't reach us?"* / *"How do I store water safely for 2 weeks?"* / *"Where is the nearest resilience center?"*
-
-**Offline mode — Local AI:**
-- On-device model (Llama / Phi / Gemma class)
-- Pre-loaded with first aid guides (CPR, Heimlich, wound care, hypothermia treatment)
-- Pre-loaded with local map data (downloaded during online sync)
-- Answers questions like: *"Step by step: how do I perform CPR on an adult?"* / *"What are signs of carbon monoxide poisoning?"* / *"Where is the nearest water distribution point?"*
-
----
-
-### Screen 5 — Crisis Map *(Phase 2)*
-
-An interactive offline-capable map showing:
-
-- 🔵 Active mesh nodes (device density heatmap)
-- 🏥 Hospitals & medical points
-- 💧 Water distribution points
-- 🍞 Food distribution centers
-- 🔋 Charging stations (solar-powered)
-- 🛡️ Resilience centers / civil protection shelters
-- ⚡ Known power outage zones
-
-Map data pre-downloaded and updated during online sync.
+- `Zrzut ekranu 2026-06-05 221840.png`
+- `Zrzut ekranu 2026-06-05 221846.png`
+- `Zrzut ekranu 2026-06-05 221850.png`
 
 ---
 
 ## Solving the Urban Density Problem
 
-WiFi Direct works within ~100m. In a large, spread-out city this could create **isolated graph islands** — groups of phones that can't reach each other.
-
-We have two bridge solutions:
+WiFi Direct works within ~100m. In a large city this creates **isolated graph islands**.
 
 ### Solution A — Solar-Powered Infrastructure Nodes
 
-Mount small relay devices on **existing lamp posts and utility poles**, powered by their own solar panels. These nodes:
-- Are **grid-independent** (solar + small battery)
-- Serve as permanent **graph bridges** between isolated clusters
-- Require one-time municipal investment
-- Can double as **charging points** for civilian phones
+Relay devices on lamp posts and utility poles, powered by solar panels:
+- Grid-independent (solar + small battery)
+- Permanent graph bridges between isolated clusters
+- One-time municipal investment, can double as phone charging points
 
 ### Solution B — Mobile Bridge Vehicles
 
-Government-coordinated vehicles that drive pre-defined routes through districts, acting as **moving bridge nodes** between isolated mesh clusters. This requires zero new infrastructure and can be activated within hours using existing emergency vehicle fleets.
+Government emergency vehicles driving pre-defined district routes, acting as moving bridge nodes. Zero new infrastructure — activatable within hours using existing fleets.
 
 ---
 
-## Future Roadmap
+## How to Run
 
-### Phase 3 — Starlink Backbone
-For municipalities with resources: solar-powered Starlink terminals at key city points (resilience centers, hospitals) provide a **satellite internet bridge** that is fully grid-independent. Individual users connect via the mesh, packets route to the Starlink node.
+### Mobile App (Expo)
 
-### Phase 4 — Community Reward System
-A point/credit system to encourage mutual aid:
-- An elderly neighbor posts a request: *"I need medication from pharmacy on Wenceslas Square"*
-- A user in the area fulfills the request and earns **community points**
-- Points redeemable for discounts at partner stores or public services
-- Gamifies resilience without monetizing crisis
+```bash
+cd app          # or cd nexus for the P2P branch
+npm install
+npx expo start
+```
 
-### Phase 5 — Civic App Integration
-Rather than a standalone app, integrate Nexus capabilities into:
-- **mObywatel** (Poland) — already installed on millions of phones
-- National banking apps — high install rate, verified user identity
-- EU Digital Identity Wallet — pan-European crisis communication
+Requires a physical Android device for Wi-Fi Direct features. Expo Go works for UI-only development.
 
-### Phase 6 — Water Infrastructure Mapping
-Inspired by post-war Ukraine experience, where water access was the #1 survival factor:
-- Map all functional wells, springs, and manual pumps in the city
-- Offline-downloadable
-- Community-updated during crisis
+### RL Training (Python)
 
-> Lessons from Ukraine: During power outages in winter 2022–2023, access to water was identified as the primary survival challenge for urban residents.
-> — [UNHCR Ukraine Situation Report](https://www.unhcr.org/ua/en)
-> — [Reuters: Ukraine water crisis](https://www.reuters.com/world/europe/)
+```bash
+cd mesh
+uv sync                          # install deps
+uv run src/train.py              # train with default config
+uv run src/render_multi.py       # visualize routing + RCB broadcast
+uv run src/render_multi.py --record  # export symulacja.mp4
+```
+
+Requires Python 3.11+. W&B account optional (set `wandb.mode=disabled` to skip).
 
 ---
 
 ## Challenge Alignment
 
-| Challenge Area (from GreenHack 2026) | Nexus Feature |
-|--------------------------------------|---------------------|
-| **2 — Communication bridges** | WiFi Direct mesh network |
-| **3 — Resilience centres** | Map + checklist sync to centers |
-| **7 — Individuals & households** | Checklist, family groups, offline chatbot |
-| **5 — NGOs & volunteers** | User hierarchy, coordination layer |
-| **Track 9 — Community preparedness platform** | Checklists + AI advisor |
-| **Track 9 — Crisis alert translator** | Tier 1 priority broadcast system |
-| **Track 9 — Shared resilience data layer** | Mesh graph + map data layer |
+| Challenge Area (GreenHack 2026) | Nexus Feature | Status |
+|---------------------------------|---------------|--------|
+| **2 — Communication bridges** | WiFi Direct mesh, TCP relay, multi-hop routing | Implemented |
+| **3 — Resilience centres** | Map screen + checklist sync to centers | Implemented |
+| **7 — Individuals & households** | Checklist with expiry tracking, SOS with GPS, offline AI | Implemented |
+| **5 — NGOs & volunteers** | Priority message routing, ALERTS broadcast tab | Implemented |
+| **Track 9 — Community preparedness platform** | Checklist + Groq AI advisor | Implemented |
+| **Track 9 — Crisis alert translator** | Priority broadcast (PriorityBanner, ALERTS tab) | Implemented |
+| **Track 9 — Shared resilience data layer** | Mesh graph + RL routing agent + ONNX export | Implemented |
 
 ---
 
-## Technical Constraints & Honest Trade-offs
+## Technical Trade-offs
 
 | Constraint | Our Approach |
 |------------|-------------|
-| App size (must run on older phones) | Modular architecture — offline AI model is optional download |
-| Local AI model size (~2GB) | Downloaded only on Wi-Fi, stored on SD card if available |
-| Battery drain from mesh networking | Low-power mesh mode: reduce scan frequency after 2h of outage |
-| WiFi Direct max ~100m range | Solar bridge nodes + mobile bridges for sparse areas |
-| Troll detection without internet | Pre-trained lightweight classifier, updated during online sync |
-| Encryption key exchange without server | QR-code based key exchange during household setup |
+| App size on older phones | Offline AI model (Gemma 2B GGUF) is a separate optional download |
+| Local AI model size (~1.5 GB) | llama.rn with Gemma 2B; Groq used as stand-in in current build |
+| Battery drain from mesh | Ping interval tunable; battery level attached to all messages so routing agent avoids low-battery nodes |
+| WiFi Direct max ~100m range | Solar bridge nodes + mobile bridge vehicles for sparse areas |
+| Encryption key exchange without server | Key pair generated locally at startup; public keys gossiped through the mesh on connect |
+| RL model deployment | PyTorch → ONNX export; `model.onnx.data` included in repo |
+
+---
