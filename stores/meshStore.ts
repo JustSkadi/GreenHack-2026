@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { Message, Peer, MeshMode, RoutingMode, MessageGroup } from '../types';
+import { useAuthStore } from './authStore';
 import { MOCK_MESSAGES, MOCK_PEERS } from '../lib/mock/mockData';
 
 // ─────────────────────────────────────────────────────────────
@@ -34,18 +35,21 @@ interface MeshState {
   dismissPriority: () => void;
 }
 
-const splitMessages = (msgs: Message[]) => ({
-  global:     msgs.filter(m => !m.group_id && !m.is_priority),
-  family:     msgs.filter(m => m.group_id !== null),
-  broadcasts: msgs.filter(m => m.is_priority),
-});
+const splitMessages = (msgs: Message[]) => {
+  // Dla uproszczenia (gdybyśmy pobierali z DB)
+  return {
+    global:     msgs.filter(m => (!m.group_id || (m.group_id !== 'family-demo-001')) && !m.is_priority),
+    family:     msgs.filter(m => m.group_id === 'family-demo-001'),
+    broadcasts: msgs.filter(m => m.is_priority),
+  };
+};
 
 export const useMeshStore = create<MeshState>((set, get) => ({
   mode:        'online',
-  peers:       MOCK_PEERS,
+  peers:       [],
   messages:    splitMessages(MOCK_MESSAGES),
   routingMode: 'flooding',
-  activePriorityMessage: MOCK_MESSAGES.find(m => m.is_priority) ?? null,
+  activePriorityMessage: null,
 
   setMode: (mode) => set({ mode }),
 
@@ -65,7 +69,28 @@ export const useMeshStore = create<MeshState>((set, get) => ({
       //   })
       //   Realtime subscription doda ją automatycznie przez addMessage()
     } else {
-      // [P3] ZASTĄP: meshLib.sendMeshMessage(content, isPriority, userTier)
+      // Offline: Wyślij przez Wi-Fi Direct Mesh
+      const { sendMeshMessage } = require('../lib/mesh/wifiDirect');
+      const profile = useAuthStore.getState().profile;
+      
+      const mock: Message = {
+        id:              `msg-${Date.now()}`,
+        sender_id:       profile?.id || 'user-local-001',
+        sender_username: profile?.username || 'Ja',
+        sender_tier:     profile?.tier || 4,
+        content,
+        encrypted:       group === 'family',
+        group_id:        (group === 'family') ? (profile?.family_group_id || 'family-demo-001') : (group !== 'global' && group !== 'broadcasts' ? group : null),
+        is_priority:     isPriority,
+        trust_score:     1.0,
+        hops:            0,
+        routed_by_rl:    false,
+        created_at:      new Date().toISOString(),
+      };
+      
+      sendMeshMessage(mock);
+      get().addMessage(mock);
+      return; // kończymy, żeby nie dodawać drugi raz na dole
     }
 
     // Mock: dodaj lokalnie
@@ -76,7 +101,7 @@ export const useMeshStore = create<MeshState>((set, get) => ({
       sender_tier:     4,
       content,
       encrypted:       group === 'family',
-      group_id:        group === 'family' ? 'family-demo-001' : null,
+      group_id:        (group === 'family') ? 'family-demo-001' : (group !== 'global' && group !== 'broadcasts' ? group : null),
       is_priority:     isPriority,
       trust_score:     1.0,
       hops:            0,
@@ -89,9 +114,12 @@ export const useMeshStore = create<MeshState>((set, get) => ({
   addMessage: (msg) => {
     set(s => {
       const newMessages = { ...s.messages };
+      const profile = useAuthStore.getState().profile;
+      const isFamily = msg.group_id === 'family-demo-001' || (profile && msg.group_id === profile.family_group_id);
+
       if (msg.is_priority) {
         newMessages.broadcasts = [msg, ...s.messages.broadcasts];
-      } else if (msg.group_id) {
+      } else if (msg.group_id && isFamily) {
         newMessages.family = [msg, ...s.messages.family];
       } else {
         newMessages.global = [msg, ...s.messages.global];

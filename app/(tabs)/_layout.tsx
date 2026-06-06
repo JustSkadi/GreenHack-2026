@@ -22,7 +22,6 @@ export default function TabLayout() {
     { name: 'index',        label: t.tab_sos,  icon: '⚠' },
     { name: 'communicator', label: t.tab_comm, icon: '◈' },
     { name: 'checklist',    label: t.tab_list, icon: '◻' },
-    { name: 'map',          label: t.tab_map,  icon: '◎' },
   ];
 
   return (
@@ -44,6 +43,7 @@ export default function TabLayout() {
           }}
         />
       ))}
+      <Tabs.Screen name="map" options={{ href: null }} />
     </Tabs>
   );
 }

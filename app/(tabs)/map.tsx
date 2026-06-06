@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import MapView, { Marker, Circle } from 'react-native-maps';
+import { Platform } from 'react-native';
 import { colors, spacing, mono, radius } from '../../constants/theme';
 import { MOCK_MAP_PINS } from '../../lib/mock/mockData';
 import { MapPin } from '../../types';
@@ -69,31 +70,31 @@ export default function MapScreen() {
         showsScale={false}
         toolbarEnabled={false}
       >
-        {pins.map(pin => (
-          <Marker
-            key={pin.id}
-            coordinate={pin.coordinate}
-            onPress={() => setSelectedPin(pin)}
-          >
-            <View style={[styles.markerWrap, { borderColor: PIN_COLORS[pin.type] }]}>
-              <Text style={[styles.markerSymbol, { color: PIN_COLORS[pin.type] }]}>
-                {PIN_SYMBOLS[pin.type]}
-              </Text>
-            </View>
-          </Marker>
-        ))}
+          {pins.map(pin => (
+            <Marker
+              key={pin.id}
+              coordinate={pin.coordinate}
+              onPress={() => setSelectedPin(pin)}
+            >
+              <View style={[styles.markerWrap, { borderColor: PIN_COLORS[pin.type] }]}>
+                <Text style={[styles.markerSymbol, { color: PIN_COLORS[pin.type] }]}>
+                  {PIN_SYMBOLS[pin.type]}
+                </Text>
+              </View>
+            </Marker>
+          ))}
 
-        {pins.filter(p => p.type === 'outage').map(pin => (
-          <Circle
-            key={`zone-${pin.id}`}
-            center={pin.coordinate}
-            radius={600}
-            fillColor="rgba(198,40,40,0.10)"
-            strokeColor="rgba(198,40,40,0.35)"
-            strokeWidth={1}
-          />
-        ))}
-      </MapView>
+          {pins.filter(p => p.type === 'outage').map(pin => (
+            <Circle
+              key={`zone-${pin.id}`}
+              center={pin.coordinate}
+              radius={600}
+              fillColor="rgba(198,40,40,0.10)"
+              strokeColor="rgba(198,40,40,0.35)"
+              strokeWidth={1}
+            />
+          ))}
+        </MapView>
 
       {selectedPin && (
         <TouchableOpacity

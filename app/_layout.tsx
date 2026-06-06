@@ -1,3 +1,13 @@
+import { Alert } from 'react-native';
+
+const ErrorUtils = (global as any).ErrorUtils;
+if (ErrorUtils) {
+  ErrorUtils.setGlobalHandler((err: any, isFatal: boolean) => {
+    Alert.alert('FATAL JS ERROR', err?.message || String(err));
+  });
+}
+
+import '../lib/mesh/crypto-polyfill';
 import { useEffect } from 'react';
 import { View, StyleSheet, StatusBar } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,6 +19,7 @@ import MeshStatusBar from '../components/MeshStatusBar';
 import ChatBubble from '../components/ChatBubble';
 import PriorityBanner from '../components/PriorityBanner';
 import IdokladyApp from '../components/idoklady/IdokladyApp';
+import { initWifiDirect } from '../lib/mesh/wifiDirect';
 
 const EXTRA_TOP    = 12;
 const EXTRA_BOTTOM = 16;
@@ -21,6 +32,8 @@ function AppShell() {
   useEffect(() => {
     // Restore Nexus session silently in background
     restoreSession();
+    // Start Wi-Fi Direct Mesh background worker
+    initWifiDirect();
   }, []);
 
   const isNexus = mode === 'nexus';

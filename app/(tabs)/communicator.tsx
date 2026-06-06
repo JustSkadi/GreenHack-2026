@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing, mono, radius } from '../../constants/theme';
 import { useMeshStore } from '../../stores/meshStore';
 import { useAuthStore } from '../../stores/authStore';
+import { connectToPeer } from '../../lib/mesh/wifiDirect';
 import MessageItem from '../../components/MessageItem';
 import { useT } from '../../lib/i18n';
 import { Message, MessageGroup } from '../../types';
@@ -24,6 +25,7 @@ type ThreadInfo = {
 export default function CommunicatorScreen() {
   const t = useT();
   const [activeTab, setActiveTab] = useState<MessageGroup>('global');
+  const [showMeshModal, setShowMeshModal] = useState(false);
   const [thread, setThread]       = useState<ThreadInfo | null>(null);
   const [threadInput, setThreadInput] = useState('');
   const listRef   = useRef<FlatList>(null);
@@ -32,26 +34,36 @@ export default function CommunicatorScreen() {
   const { messages, sendMessage, mode } = useMeshStore();
   const { profile } = useAuthStore();
 
-  const TABS: { key: MessageGroup; label: string }[] = [
+  const TABS: { key: MessageGroup | 'debug'; label: string }[] = [
     { key: 'global',     label: t.comm_tab_all },
     { key: 'family',     label: t.comm_tab_family },
     { key: 'broadcasts', label: t.comm_tab_alerts },
   ];
 
-  const currentMessages = messages[activeTab];
+  const { peers } = useMeshStore();
+  const currentMessages = useMemo(() => {
+    if (activeTab === 'global') return messages.global.filter(m => !m.group_id);
+    return messages[activeTab as MessageGroup] || [];
+  }, [activeTab, messages]);
 
   useEffect(() => {
     if (currentMessages.length > 0)
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
   }, [currentMessages.length]);
 
-  const openThread = (msg: Message) => {
-    if (activeTab === 'broadcasts') {
-      setThread({ senderId: msg.sender_id, senderName: msg.sender_username, senderTier: msg.sender_tier, tab: 'broadcasts', readOnly: true });
-    } else if (activeTab === 'family') {
-      setThread({ senderId: 'family', senderName: 'Family', senderTier: 0, tab: 'family', readOnly: false });
+  const openThread = (msg: Message | Peer, isPeer = false) => {
+    if (isPeer) {
+      const p = msg as Peer;
+      setThread({ senderId: p.id, senderName: p.username || p.id, senderTier: p.tier, tab: 'debug' as any, readOnly: false });
     } else {
-      setThread({ senderId: msg.sender_id, senderName: msg.sender_username, senderTier: msg.sender_tier, tab: 'global', readOnly: false });
+      const m = msg as Message;
+      if (activeTab === 'broadcasts') {
+        setThread({ senderId: m.sender_id, senderName: m.sender_username, senderTier: m.sender_tier, tab: 'broadcasts', readOnly: true });
+      } else if (activeTab === 'family') {
+        setThread({ senderId: 'family', senderName: 'Family', senderTier: 0, tab: 'family', readOnly: false });
+      } else {
+        setThread({ senderId: m.sender_id, senderName: m.sender_username, senderTier: m.sender_tier, tab: 'global', readOnly: false });
+      }
     }
   };
 
@@ -59,6 +71,14 @@ export default function CommunicatorScreen() {
     if (!thread) return [];
     if (thread.tab === 'family')     return messages.family;
     if (thread.tab === 'broadcasts') return messages.broadcasts.filter(m => m.sender_id === thread.senderId);
+    if (thread.tab === 'debug' as any) {
+      // Direct message with peer
+      const myId = profile?.id || 'user-local-001';
+      return messages.global.filter(m => 
+        (m.sender_id === thread.senderId && m.group_id === myId) || 
+        (m.sender_id === myId && m.group_id === thread.senderId)
+      );
+    }
     return messages.global.filter(m =>
       m.sender_id === thread.senderId || m.sender_id === (profile?.id ?? 'user-local-001')
     );
@@ -67,7 +87,14 @@ export default function CommunicatorScreen() {
   const sendInThread = () => {
     const text = threadInput.trim();
     if (!text || !thread) return;
-    sendMessage(text, thread.tab === 'family' ? 'family' : 'global');
+    
+    if (thread.tab === 'debug' as any) {
+      // Direct message trick: set group as their ID
+      sendMessage(text, thread.senderId as any);
+    } else {
+      sendMessage(text, thread.tab === 'family' ? 'family' : 'global');
+    }
+    
     setThreadInput('');
     setTimeout(() => threadRef.current?.scrollToEnd({ animated: true }), 100);
   };
@@ -89,9 +116,14 @@ export default function CommunicatorScreen() {
               <Text style={[styles.tabLabel, activeTab === tab.key && styles.tabLabelActive]}>
                 {tab.label}
               </Text>
-              {messages[tab.key].length > 0 && activeTab !== tab.key && (
+              {activeTab !== tab.key && tab.key !== 'debug' && messages[tab.key as MessageGroup].length > 0 && (
                 <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{messages[tab.key].length}</Text>
+                  <Text style={styles.badgeText}>{messages[tab.key as MessageGroup].length}</Text>
+                </View>
+              )}
+              {activeTab !== tab.key && tab.key === 'debug' && peers.length > 0 && (
+                <View style={[styles.badge, { backgroundColor: colors.yellow }]}>
+                  <Text style={[styles.badgeText, { color: colors.bg }]}>{peers.length}</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -99,10 +131,12 @@ export default function CommunicatorScreen() {
         </View>
 
         {mode === 'offline' && (
-          <View style={styles.offlineBar}>
-            <View style={styles.offlineDot} />
-            <Text style={styles.offlineText}>{t.comm_offline_bar}</Text>
-          </View>
+          <TouchableOpacity onPress={() => setShowMeshModal(true)} activeOpacity={0.8}>
+            <View style={styles.offlineBar}>
+              <View style={styles.offlineDot} />
+              <Text style={styles.offlineText}>{t.comm_offline_bar} (Tap to Connect)</Text>
+            </View>
+          </TouchableOpacity>
         )}
 
         <FlatList
@@ -128,6 +162,62 @@ export default function CommunicatorScreen() {
           <Text style={styles.tapHintText}>tap message · open conversation</Text>
         </View>
       </View>
+
+      {/* ── Mesh Connections Modal ── */}
+      <Modal
+        visible={showMeshModal}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setShowMeshModal(false)}
+      >
+        <SafeAreaView style={styles.threadRoot} edges={['top', 'bottom']}>
+          <View style={styles.threadHeader}>
+            <TouchableOpacity onPress={() => setShowMeshModal(false)} style={styles.backBtn}>
+              <Text style={styles.backArrow}>↓</Text>
+            </TouchableOpacity>
+            <Text style={styles.threadSenderName}>Zarządzanie siecią Mesh</Text>
+          </View>
+          <FlatList
+            data={peers}
+            keyExtractor={p => p.id}
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            renderItem={({ item }) => {
+              const isConnected = !item.id.includes(':') && !item.id.includes('.');
+              return (
+                <TouchableOpacity 
+                  style={[styles.peerItem, !isConnected && { opacity: 0.8, backgroundColor: colors.surface }]} 
+                  onPress={() => {
+                    if (isConnected) {
+                      setShowMeshModal(false);
+                      openThread(item, true);
+                    } else {
+                      connectToPeer(item.id);
+                    }
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.peerRow}>
+                    <View style={[styles.peerDot, { backgroundColor: item.last_seen > Date.now() - 30000 ? (isConnected ? colors.green : colors.yellow) : colors.textMuted }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.peerName}>{item.username || item.id}</Text>
+                      <Text style={[styles.peerId, !isConnected && { color: colors.blue }]}>
+                        {isConnected ? item.id : 'Naciśnij, aby połączyć (Wi-Fi Direct)'}
+                      </Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyIcon}>📡</Text>
+                <Text style={styles.emptyText}>Trwa wyszukiwanie węzłów P2P...</Text>
+              </View>
+            }
+          />
+        </SafeAreaView>
+      </Modal>
 
       {/* ── Conversation Modal ── */}
       <Modal
@@ -251,6 +341,18 @@ const styles = StyleSheet.create({
 
   tapHint:     { alignItems: 'center', paddingVertical: 6 },
   tapHintText: { fontFamily: mono, fontSize: 9, color: colors.textMuted, letterSpacing: 0.3 },
+
+  peerItem: {
+    padding: spacing.md,
+    backgroundColor: colors.surfaceHigh,
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+    borderRadius: radius.md,
+  },
+  peerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  peerDot: { width: 10, height: 10, borderRadius: 5 },
+  peerName: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 2 },
+  peerId: { fontFamily: mono, fontSize: 10, color: colors.textMuted },
 
   // ── Thread / Conversation ──
   threadRoot:   { flex: 1, backgroundColor: colors.surface },

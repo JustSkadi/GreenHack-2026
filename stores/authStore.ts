@@ -71,9 +71,13 @@ export const useAuthStore = create<AuthState>((set) => ({
     //   const { data: { session } } = await supabase.auth.getSession()
     //   if (session) { fetch profile, set state }
     await new Promise(r => setTimeout(r, 200));
+    
+    // Generujemy unikalne ID urządzenia, by testy na 2 telefonach się nie mieszały
+    const randomId = 'user-' + Math.floor(Math.random() * 999999);
+    
     set({
-      user:      { id: MOCK_PROFILE.id, email: 'demo@nexus.app' },
-      profile:   MOCK_PROFILE,
+      user:      { id: randomId, email: 'demo@nexus.app' },
+      profile:   { ...MOCK_PROFILE, id: randomId, username: 'DemoUser_' + randomId.slice(-3) },
       isLoggedIn: true,
       isLoading:  false,
     });
